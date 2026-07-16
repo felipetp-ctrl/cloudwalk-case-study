@@ -56,10 +56,16 @@ def train_model(
     sample_weights: pd.Series | None = None,
 ) -> object:
     if model_name == 'lr':
+        lr_params = {
+            'solver': 'saga',
+            'l1_ratio': 0.5,
+        }
+        lr_params.update(params)
         model = LogisticRegression(
             class_weight='balanced',
-            max_iter=1000,
-            **params,
+            max_iter=2000,
+            penalty='elasticnet',
+            **lr_params,
         )
     elif model_name == 'rf':
         model = RandomForestClassifier(
@@ -127,3 +133,95 @@ def evaluate_per_attack_type(
             continue
         results[cls] = recall_score(y[mask], y_pred[mask], zero_division=0)
     return results
+
+
+import optuna
+
+
+def _suggest_params(trial: optuna.Trial, model_name: str) -> dict:
+    if model_name == 'lr':
+        l1_ratio = trial.suggest_float('l1_ratio', 0.0, 1.0)
+        return {
+            'C': trial.suggest_float('C', 1e-4, 1e2, log=True),
+            'l1_ratio': l1_ratio,
+            'solver': 'saga',
+        }
+    elif model_name == 'rf':
+        return {
+            'n_estimators': trial.suggest_int('n_estimators', 100, 500),
+            'max_depth': trial.suggest_int('max_depth', 5, 20),
+            'min_samples_leaf': trial.suggest_int('min_samples_leaf', 5, 50),
+            'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2']),
+        }
+    elif model_name == 'xgb':
+        return {
+            'n_estimators': trial.suggest_int('n_estimators', 100, 800),
+            'max_depth': trial.suggest_int('max_depth', 3, 10),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+            'min_child_weight': trial.suggest_int('min_child_weight', 1, 20),
+            'scale_pos_weight': trial.suggest_float('scale_pos_weight', 50, 150),
+            'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 10, log=True),
+            'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 10, log=True),
+            'verbosity': 0,
+            'eval_metric': 'aucpr',
+        }
+    elif model_name == 'lgbm':
+        return {
+            'n_estimators': trial.suggest_int('n_estimators', 100, 800),
+            'num_leaves': trial.suggest_int('num_leaves', 15, 127),
+            'max_depth': trial.suggest_int('max_depth', 3, 10),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+            'min_child_samples': trial.suggest_int('min_child_samples', 5, 50),
+            'scale_pos_weight': trial.suggest_float('scale_pos_weight', 50, 150),
+            'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 10, log=True),
+            'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 10, log=True),
+            'verbose': -1,
+            'metric': 'average_precision',
+        }
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+
+
+def create_objective(
+    model_name: str,
+    X: pd.DataFrame,
+    y: pd.Series,
+    sample_weights: pd.Series,
+    cv_splits: list,
+) -> callable:
+    def objective(trial: optuna.Trial) -> float:
+        params = _suggest_params(trial, model_name)
+        scores = []
+        for train_idx, val_idx in cv_splits:
+            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+            w_train = sample_weights.iloc[train_idx]
+            if y_val.sum() == 0:
+                continue
+            model = train_model(model_name, params, X_train, y_train, w_train)
+            metrics = evaluate_model(model, X_val, y_val)
+            scores.append(metrics['pr_auc'])
+        return np.mean(scores) if scores else 0.0
+    return objective
+
+
+def tune_model(
+    model_name: str,
+    X: pd.DataFrame,
+    y: pd.Series,
+    sample_weights: pd.Series,
+    cv_splits: list,
+    n_trials: int = 50,
+) -> tuple[dict, optuna.study.Study]:
+    study = optuna.create_study(
+        direction='maximize',
+        sampler=optuna.samplers.TPESampler(seed=42),
+        pruner=optuna.pruners.MedianPruner(),
+    )
+    objective = create_objective(model_name, X, y, sample_weights, cv_splits)
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    return study.best_params, study

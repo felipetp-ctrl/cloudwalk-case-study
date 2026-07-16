@@ -131,3 +131,33 @@ def test_evaluate_per_attack_type():
     result = evaluate_per_attack_type(model, X, y, attack_classes)
     assert 'scanner' in result
     assert 0 <= result['scanner'] <= 1
+
+
+# --- Task 4: Optuna tuning ---
+
+def test_create_objective():
+    from src.model import create_objective, make_time_series_cv_splits
+    X, y, w = _make_classification_data()
+    timestamps = pd.Series(
+        [pd.Timestamp('2025-01-06', tz='UTC')] * 150 +
+        [pd.Timestamp('2025-01-07', tz='UTC')] * 50
+    )
+    df_temp = pd.DataFrame({'timestamp': timestamps, 'is_malicious': y})
+    splits = make_time_series_cv_splits(df_temp, min_train_days=1)
+    objective = create_objective('lr', X, y, w, splits)
+    assert callable(objective)
+
+
+def test_tune_model_runs():
+    from src.model import tune_model, make_time_series_cv_splits
+    X, y, w = _make_classification_data()
+    timestamps = pd.Series(
+        [pd.Timestamp('2025-01-06', tz='UTC')] * 100 +
+        [pd.Timestamp('2025-01-07', tz='UTC')] * 50 +
+        [pd.Timestamp('2025-01-08', tz='UTC')] * 50
+    )
+    df_temp = pd.DataFrame({'timestamp': timestamps, 'is_malicious': y})
+    splits = make_time_series_cv_splits(df_temp, min_train_days=1)
+    best_params, study = tune_model('lr', X, y, w, splits, n_trials=3)
+    assert isinstance(best_params, dict)
+    assert study.best_value > 0
