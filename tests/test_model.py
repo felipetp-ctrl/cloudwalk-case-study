@@ -198,3 +198,36 @@ def test_prune_features_keeps_minimum():
     imp = pd.Series([99, 1], index=['dominant', 'weak'])
     kept = prune_features(imp, threshold=0.95)
     assert 'dominant' in kept
+
+
+# --- Task 6: Cost-optimal threshold ---
+
+def test_cost_optimal_threshold():
+    from src.model import find_cost_optimal_threshold
+    y_true = np.array([0, 0, 0, 0, 0, 0, 0, 0, 1, 1])
+    y_prob = np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.9, 0.9])
+    threshold, cost = find_cost_optimal_threshold(y_true, y_prob, fp_cost=2.50, fn_cost=0.10)
+    assert 0 < threshold < 1
+    assert cost >= 0
+
+
+def test_cost_optimal_threshold_high_fp_cost_raises_threshold():
+    from src.model import find_cost_optimal_threshold
+    np.random.seed(42)
+    y_true = np.array([0] * 100 + [1] * 10)
+    y_prob = np.concatenate([
+        np.linspace(0.0, 0.6, 100),
+        np.linspace(0.4, 1.0, 10),
+    ])
+    t_high_fp, _ = find_cost_optimal_threshold(y_true, y_prob, fp_cost=25.0, fn_cost=0.10)
+    t_low_fp, _ = find_cost_optimal_threshold(y_true, y_prob, fp_cost=0.10, fn_cost=25.0)
+    assert t_high_fp > t_low_fp
+
+
+def test_evaluate_at_threshold():
+    from src.model import train_model, evaluate_at_threshold
+    X, y, w = _make_classification_data()
+    model = train_model('lr', {}, X, y, w)
+    metrics_low = evaluate_at_threshold(model, X, y, threshold=0.1)
+    metrics_high = evaluate_at_threshold(model, X, y, threshold=0.9)
+    assert metrics_low['recall'] >= metrics_high['recall']

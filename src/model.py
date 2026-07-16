@@ -250,3 +250,42 @@ def prune_features(
     cumsum = normalized.cumsum()
     mask = cumsum.shift(1, fill_value=0.0) < threshold
     return list(importance.index[mask])
+
+
+def find_cost_optimal_threshold(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    fp_cost: float,
+    fn_cost: float,
+    base_rate: float | None = None,
+) -> tuple[float, float]:
+    if base_rate is None:
+        base_rate = y_true.mean()
+    thresholds = np.linspace(0.01, 0.99, 500)
+    best_threshold = 0.5
+    best_cost = float('inf')
+    for t in thresholds:
+        y_pred = (y_prob >= t).astype(int)
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+        fpr = fp / (fp + tn) if (fp + tn) > 0 else 0
+        fnr = fn / (fn + tp) if (fn + tp) > 0 else 0
+        cost = fpr * (1 - base_rate) * fp_cost + fnr * base_rate * fn_cost
+        if cost < best_cost:
+            best_cost = cost
+            best_threshold = t
+    return best_threshold, best_cost
+
+
+def evaluate_at_threshold(
+    model: object, X: pd.DataFrame, y: pd.Series, threshold: float
+) -> dict:
+    y_prob = model.predict_proba(X)[:, 1]
+    y_pred = (y_prob >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y, y_pred).ravel()
+    return {
+        'precision': precision_score(y, y_pred, zero_division=0),
+        'recall': recall_score(y, y_pred, zero_division=0),
+        'f1': f1_score(y, y_pred, zero_division=0),
+        'fpr': fp / (fp + tn) if (fp + tn) > 0 else 0.0,
+        'threshold': threshold,
+    }
