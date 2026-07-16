@@ -60,3 +60,74 @@ def test_time_series_cv_expanding_window():
     splits = make_time_series_cv_splits(df, min_train_days=1)
     train_sizes = [len(train_idx) for train_idx, _ in splits]
     assert train_sizes == sorted(train_sizes)
+
+
+# --- Task 3: Training and evaluation ---
+
+from sklearn.datasets import make_classification
+
+
+def _make_classification_data():
+    X, y = make_classification(
+        n_samples=200, n_features=10, n_informative=5,
+        weights=[0.9, 0.1], random_state=42,
+    )
+    X = pd.DataFrame(X, columns=[f'f{i}' for i in range(10)])
+    y = pd.Series(y, name='is_malicious')
+    weights = pd.Series(np.ones(len(y)))
+    return X, y, weights
+
+
+def test_train_model_lr():
+    from src.model import train_model
+    X, y, w = _make_classification_data()
+    model = train_model('lr', {}, X, y, w)
+    assert hasattr(model, 'predict_proba')
+
+
+def test_train_model_rf():
+    from src.model import train_model
+    X, y, w = _make_classification_data()
+    model = train_model('rf', {'n_estimators': 10}, X, y, w)
+    assert hasattr(model, 'predict_proba')
+
+
+def test_train_model_xgb():
+    from src.model import train_model
+    X, y, w = _make_classification_data()
+    model = train_model('xgb', {'n_estimators': 10, 'verbosity': 0}, X, y, w)
+    assert hasattr(model, 'predict_proba')
+
+
+def test_train_model_lgbm():
+    from src.model import train_model
+    X, y, w = _make_classification_data()
+    model = train_model('lgbm', {'n_estimators': 10, 'verbose': -1}, X, y, w)
+    assert hasattr(model, 'predict_proba')
+
+
+def test_evaluate_model():
+    from src.model import train_model, evaluate_model
+    X, y, w = _make_classification_data()
+    model = train_model('lr', {}, X, y, w)
+    metrics = evaluate_model(model, X, y)
+    assert 'precision' in metrics
+    assert 'recall' in metrics
+    assert 'f1' in metrics
+    assert 'fpr' in metrics
+    assert 'pr_auc' in metrics
+    assert 'roc_auc' in metrics
+    assert 'y_prob' in metrics
+    assert 0 <= metrics['pr_auc'] <= 1
+    assert len(metrics['y_prob']) == len(y)
+
+
+def test_evaluate_per_attack_type():
+    from src.model import train_model, evaluate_per_attack_type
+    X, y, w = _make_classification_data()
+    attack_classes = pd.Series([None] * len(y))
+    attack_classes[y == 1] = 'scanner'
+    model = train_model('lr', {}, X, y, w)
+    result = evaluate_per_attack_type(model, X, y, attack_classes)
+    assert 'scanner' in result
+    assert 0 <= result['scanner'] <= 1
