@@ -161,3 +161,40 @@ def test_tune_model_runs():
     best_params, study = tune_model('lr', X, y, w, splits, n_trials=3)
     assert isinstance(best_params, dict)
     assert study.best_value > 0
+
+
+# --- Task 5: Feature importance and pruning ---
+
+def test_get_feature_importance_lr():
+    from src.model import train_model, get_feature_importance
+    X, y, w = _make_classification_data()
+    model = train_model('lr', {}, X, y, w)
+    imp = get_feature_importance(model, 'lr', list(X.columns))
+    assert len(imp) == X.shape[1]
+    assert imp.iloc[0] >= imp.iloc[-1]
+
+
+def test_get_feature_importance_lgbm():
+    from src.model import train_model, get_feature_importance
+    X, y, w = _make_classification_data()
+    model = train_model('lgbm', {'n_estimators': 10, 'verbose': -1}, X, y, w)
+    imp = get_feature_importance(model, 'lgbm', list(X.columns))
+    assert len(imp) == X.shape[1]
+    assert imp.iloc[0] >= imp.iloc[-1]
+
+
+def test_prune_features():
+    from src.model import prune_features
+    imp = pd.Series([50, 30, 10, 5, 3, 2], index=[f'f{i}' for i in range(6)])
+    kept = prune_features(imp, threshold=0.90)
+    assert 'f0' in kept
+    assert 'f1' in kept
+    assert 'f2' in kept
+    assert len(kept) <= 4
+
+
+def test_prune_features_keeps_minimum():
+    from src.model import prune_features
+    imp = pd.Series([99, 1], index=['dominant', 'weak'])
+    kept = prune_features(imp, threshold=0.95)
+    assert 'dominant' in kept

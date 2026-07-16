@@ -225,3 +225,28 @@ def tune_model(
     objective = create_objective(model_name, X, y, sample_weights, cv_splits)
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
     return study.best_params, study
+
+
+def get_feature_importance(
+    model: object, model_name: str, feature_names: list[str]
+) -> pd.Series:
+    if model_name == 'lr':
+        imp = np.abs(model.coef_[0])
+    elif model_name in ('rf', 'xgb', 'lgbm'):
+        imp = model.feature_importances_
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+    series = pd.Series(imp, index=feature_names)
+    return series.sort_values(ascending=False)
+
+
+def prune_features(
+    importance: pd.Series, threshold: float = 0.95
+) -> list[str]:
+    total = importance.sum()
+    if total == 0:
+        return list(importance.index)
+    normalized = importance / total
+    cumsum = normalized.cumsum()
+    mask = cumsum.shift(1, fill_value=0.0) < threshold
+    return list(importance.index[mask])
