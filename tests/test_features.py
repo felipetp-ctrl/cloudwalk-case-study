@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from src.features import shannon_entropy, compute_frequency_encoding, compute_per_request_features
+from src.features import shannon_entropy, compute_frequency_encoding, compute_per_request_features, compute_session_features
 
 
 def test_shannon_entropy_uniform():
@@ -88,3 +88,48 @@ def test_per_request_features_values():
     assert row['has_accept_language'] == False
     assert row['has_cookie'] == False
     assert row['path_has_params'] == False
+
+
+def _make_session_data():
+    """5 requests from same IP in a 2-minute span, all within one 5min floor window."""
+    base_time = pd.Timestamp('2025-01-07T10:00:00', tz='UTC')
+    return pd.DataFrame({
+        'request_id': [f'r{i}' for i in range(5)],
+        'timestamp': [base_time + pd.Timedelta(seconds=i * 15) for i in range(5)],
+        'source_ip': ['10.0.0.1'] * 5,
+        'tls_fingerprint': ['ja3_abc'] * 5,
+        'path': ['/api/v1/auth/login'] * 3 + ['/api/v1/users/me'] * 2,
+        'status_code': [200, 401, 403, 200, 200],
+        'response_time_ms': [10, 12, 11, 50, 48],
+        'body_size_bytes': [100, 100, 100, 200, 200],
+        'method': ['POST', 'POST', 'POST', 'GET', 'GET'],
+        'is_sensitive_endpoint': [True, True, True, False, False],
+    })
+
+
+def test_session_features_columns_exist():
+    df = _make_session_data()
+    result = compute_session_features(df)
+    for prefix in ['ip_1m', 'ip_5m', 'ip_30m', 'tls_1m', 'tls_5m', 'tls_30m']:
+        assert f'{prefix}_request_count' in result.columns
+        assert f'{prefix}_error_rate' in result.columns
+        assert f'{prefix}_unique_paths' in result.columns
+
+
+def test_session_features_values():
+    df = _make_session_data()
+    result = compute_session_features(df)
+    # All 5 requests fall in the same 5min floor window
+    row = result.iloc[0]
+    assert row['ip_5m_request_count'] == 5
+    assert row['ip_5m_unique_paths'] == 2
+    assert abs(row['ip_5m_error_rate'] - 0.4) < 0.01
+    assert row['ip_5m_method_diversity'] == 2
+    assert abs(row['ip_5m_sensitive_endpoint_ratio'] - 0.6) < 0.01
+
+
+def test_session_feature_count():
+    df = _make_session_data()
+    result = compute_session_features(df)
+    session_cols = [c for c in result.columns if c.startswith(('ip_', 'tls_')) and c != 'tls_fingerprint']
+    assert len(session_cols) == 78
