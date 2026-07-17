@@ -42,20 +42,20 @@ Métrica primária: não usar accuracy (inútil com 98.8% de negativos). Usar pr
     - [x] Resultado: 592 malicious (1.18%) vs 49,408 benign (98.82%)
     - [x] Discussão de gaps/ambiguidades (label absence ≠ benign, CIDR/TLS false positives, labeling delay, multi-incident overlap, dataset imbalance diverge do constraint)
 
-- [ ] 2.2 Feature engineering
-    - [ ] Per-request features
-    - [ ] Session/source-level aggregated features
-    - [ ] Use confidence levels as weights?
-    - [ ] Aggregate everything on a pipeline
-    - [ ] Justify feature choices, predictive power, etc
+- [x] 2.2 Feature engineering
+    - [x] Per-request features (15 features)
+    - [x] Session/source-level aggregated features (42 request-side with causal windowing)
+    - [x] Confidence levels used as sample weights
+    - [x] Pipeline aggregated in src/pipeline.py
+    - [x] Feature choices justified in docs/2.2-feature-engineering-decisions.md
 
-- [ ] 2.3 Baseline Model
-    - [ ] Handle the class imbalance appropriately (SMOTE?) -> (No, if we use LightGBM or XGBoost, focus on class_weight and scale_pos_weight)
-    - [ ] Use a proper train/test split that respects temporal ordering (no future data leakage)
-    - [ ] Report precision, recall, F1, and false positive rate
-    - [ ] Discuss why you chose your model and what tradeoffs you made
+- [x] 2.3 Baseline Model
+    - [x] Class imbalance: scale_pos_weight + confidence-based sample weights (no SMOTE)
+    - [x] Temporal train/test split (train days 6-9, test days 10-12)
+    - [x] PR-AUC, precision, recall, F1, FPR reported for all 4 models
+    - [x] Best model: LGBM (PR-AUC=1.0, F1=1.0, perfect recall on all attack types)
 
-- [ ] 2.4 Edge Deployment Feasibility
-    - [ ] Estimate your model's inference time and memory footprint (timeit - python)
-    - [ ] If your chosen model is too heavy (don't believe so), propose a distillation or simplification strategy
-    - [ ] Describe how you would export and serve this model at the edge (search more about how edge infrastructure works)
+- [x] 2.4 Edge Deployment Feasibility
+    - [x] Inference time and memory footprint benchmarked (Python + Rust/WASM)
+    - [x] Simplification: pruning evaluated but rejected (PR-AUC 1.0→0.879); distillation strategies documented
+    - [x] Edge serving: ONNX via tract/WASM, 57-feature model with session state, update flow, monitoring
