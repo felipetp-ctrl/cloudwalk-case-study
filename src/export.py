@@ -7,7 +7,9 @@ from onnxmltools.convert.common.data_types import FloatTensorType
 
 def export_to_onnx(model, feature_names: list[str], output_path: str) -> str:
     initial_type = [('features', FloatTensorType([None, len(feature_names)]))]
-    onnx_model = onnxmltools.convert_lightgbm(model, initial_types=initial_type)
+    onnx_model = onnxmltools.convert_lightgbm(
+        model, initial_types=initial_type, zipmap=False,
+    )
     with open(output_path, 'wb') as f:
         f.write(onnx_model.SerializeToString())
     return output_path
@@ -20,7 +22,7 @@ def validate_onnx_export(model, onnx_path: str, X_sample: pd.DataFrame) -> dict:
     input_name = session.get_inputs()[0].name
     X_float = X_sample.values.astype(np.float32)
     onnx_output = session.run(None, {input_name: X_float})
-    onnx_probs = np.array([p[1] for p in onnx_output[1]])
+    onnx_probs = onnx_output[1][:, 1]
 
     abs_errors = np.abs(original_probs - onnx_probs)
     max_err = float(abs_errors.max())
