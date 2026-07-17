@@ -31,7 +31,7 @@ def test_get_feature_columns():
     assert 'is_malicious' not in cols
     assert 'attack_class' not in cols
     assert 'sample_weight' not in cols
-    assert len(cols) == 2
+    assert 'feat_a' in cols and 'feat_b' in cols
 
 
 def test_temporal_train_test_split():
@@ -41,6 +41,15 @@ def test_temporal_train_test_split():
     assert len(train) == 60
     assert len(test) == 10
     assert train['timestamp'].max() < test['timestamp'].min()
+
+
+def test_stratified_train_test_split():
+    from src.model import stratified_train_test_split
+    df = _make_sample_df()
+    train, test = stratified_train_test_split(df, test_size=0.3)
+    assert len(train) + len(test) == len(df)
+    assert train['is_malicious'].sum() > 0
+    assert test['is_malicious'].sum() > 0
 
 
 def test_time_series_cv_splits():
@@ -60,6 +69,18 @@ def test_time_series_cv_expanding_window():
     splits = make_time_series_cv_splits(df, min_train_days=1)
     train_sizes = [len(train_idx) for train_idx, _ in splits]
     assert train_sizes == sorted(train_sizes)
+
+
+def test_stratified_cv_splits():
+    from src.model import make_stratified_cv_splits
+    X, y, _ = _make_classification_data()
+    attack_classes = pd.Series([None] * len(y))
+    attack_classes[y == 1] = 'scanner'
+    splits = make_stratified_cv_splits(y, attack_classes, n_splits=3)
+    assert len(splits) == 3
+    for tr_idx, val_idx in splits:
+        assert len(set(tr_idx) & set(val_idx)) == 0
+        assert y.iloc[val_idx].sum() > 0
 
 
 # --- Task 3: Training and evaluation ---

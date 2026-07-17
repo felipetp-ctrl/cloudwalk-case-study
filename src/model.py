@@ -8,11 +8,24 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 
-META_COLUMNS = ['request_id', 'timestamp', 'is_malicious', 'attack_class', 'sample_weight']
+META_COLUMNS = [
+    'request_id', 'timestamp', 'is_malicious', 'attack_class', 'sample_weight', 'day',
+    'source_ip', 'method', 'path', 'status_code', 'user_agent', 'tls_fingerprint',
+    'country', 'asn', 'confidence', 'incident_id', 'source_identifier',
+    'response_time_ms', 'body_size_bytes', 'status_code_group',
+]
+
+EXCLUDE_PREFIXES = ('tls_', 'ip_')
+EXCLUDE_SUFFIXES = ('_freq',)
 
 
 def get_feature_columns(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c not in META_COLUMNS]
+    return [
+        c for c in df.columns
+        if c not in META_COLUMNS
+        and not c.startswith(EXCLUDE_PREFIXES)
+        and not c.endswith(EXCLUDE_SUFFIXES)
+    ]
 
 
 def temporal_train_test_split(
@@ -20,9 +33,20 @@ def temporal_train_test_split(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     ts = pd.to_datetime(df['timestamp'], utc=True)
     cutoff = pd.Timestamp(test_date, tz='UTC')
-    train = df[ts < cutoff].copy()
-    test = df[ts >= cutoff].copy()
+    train = df[ts < cutoff].copy().reset_index(drop=True)
+    test = df[ts >= cutoff].copy().reset_index(drop=True)
     return train, test
+
+
+def stratified_train_test_split(
+    df: pd.DataFrame, test_size: float = 0.3, random_state: int = 42
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    from sklearn.model_selection import train_test_split
+    label = df['attack_class'].fillna('benign')
+    train, test = train_test_split(
+        df, test_size=test_size, random_state=random_state, stratify=label,
+    )
+    return train.reset_index(drop=True), test.reset_index(drop=True)
 
 
 def make_time_series_cv_splits(
@@ -40,6 +64,15 @@ def make_time_series_cv_splits(
             continue
         splits.append((train_idx, val_idx))
     return splits
+
+
+def make_stratified_cv_splits(
+    y: pd.Series, attack_classes: pd.Series, n_splits: int = 5, random_state: int = 42
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    from sklearn.model_selection import StratifiedKFold
+    label = attack_classes.fillna('benign')
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    return list(skf.split(y, label))
 
 
 def _count_class_ratio(y: pd.Series) -> float:
@@ -200,7 +233,7 @@ def create_objective(
             X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
             w_train = sample_weights.iloc[train_idx]
-            if y_val.sum() == 0:
+            if y_val.sum() == 0 or y_train.nunique() < 2:
                 continue
             model = train_model(model_name, params, X_train, y_train, w_train)
             metrics = evaluate_model(model, X_val, y_val)
@@ -223,7 +256,7 @@ def tune_model(
         pruner=optuna.pruners.MedianPruner(),
     )
     objective = create_objective(model_name, X, y, sample_weights, cv_splits)
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
     return study.best_params, study
 
 
