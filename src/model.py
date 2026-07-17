@@ -15,7 +15,6 @@ META_COLUMNS = [
     'response_time_ms', 'body_size_bytes', 'status_code_group',
 ]
 
-EXCLUDE_PREFIXES = ('tls_', 'ip_')
 EXCLUDE_SUFFIXES = ('_freq',)
 
 
@@ -23,7 +22,6 @@ def get_feature_columns(df: pd.DataFrame) -> list[str]:
     return [
         c for c in df.columns
         if c not in META_COLUMNS
-        and not c.startswith(EXCLUDE_PREFIXES)
         and not c.endswith(EXCLUDE_SUFFIXES)
     ]
 

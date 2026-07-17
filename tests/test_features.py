@@ -116,16 +116,42 @@ def test_session_features_columns_exist():
         assert f'{prefix}_unique_paths' in result.columns
 
 
-def test_session_features_values():
+def test_session_features_causal_first_request():
+    """First request in a window should have all-zero session features (no history)."""
     df = _make_session_data()
     result = compute_session_features(df)
-    # All 5 requests fall in the same 5min floor window
     row = result.iloc[0]
-    assert row['ip_5m_request_count'] == 5
-    assert row['ip_5m_unique_paths'] == 2
-    assert abs(row['ip_5m_error_rate'] - 0.4) < 0.01
-    assert row['ip_5m_method_diversity'] == 2
-    assert abs(row['ip_5m_sensitive_endpoint_ratio'] - 0.6) < 0.01
+    assert row['ip_5m_request_count'] == 0
+    assert row['ip_5m_unique_paths'] == 0
+    assert row['ip_5m_error_rate'] == 0.0
+    assert row['ip_5m_method_diversity'] == 0
+    assert row['ip_5m_sensitive_endpoint_ratio'] == 0.0
+    assert row['ip_5m_avg_response_time'] == 0.0
+
+
+def test_session_features_causal_accumulation():
+    """Later requests should see only past data, never the current or future rows."""
+    df = _make_session_data()
+    result = compute_session_features(df)
+
+    # Second request (index 1) sees only request 0
+    row1 = result.iloc[1]
+    assert row1['ip_5m_request_count'] == 1
+    assert row1['ip_5m_unique_paths'] == 1  # only path from request 0
+    assert row1['ip_5m_error_rate'] == 0.0  # request 0 had status 200
+    assert row1['ip_5m_method_diversity'] == 1
+
+    # Third request (index 2) sees requests 0 and 1
+    row2 = result.iloc[2]
+    assert row2['ip_5m_request_count'] == 2
+    assert row2['ip_5m_unique_paths'] == 1  # both prior requests hit same path
+    assert abs(row2['ip_5m_error_rate'] - 0.5) < 0.01  # request 1 had 401
+
+    # Fifth request (index 4) sees requests 0-3
+    row4 = result.iloc[4]
+    assert row4['ip_5m_request_count'] == 4
+    assert row4['ip_5m_unique_paths'] == 2  # /auth/login + /users/me
+    assert row4['ip_5m_method_diversity'] == 2  # POST + GET
 
 
 def test_session_feature_count():
