@@ -22,20 +22,6 @@ To make it, I have some constraints that they showed on the original .md file.
 > - **You have access to a transactional-level threat intelligence feed** that flags known-bad IPs, ASNs, and fingerprints — but it covers only ~30% of actual attacks.
 >> Look more the data, what to do with the rest of ~70%?
 
-# Anotações
-Sobre class imbalance (substituindo SMOTE):
-Pesquise como o parâmetro scale_pos_weight do XGBoost e class_weight='balanced' do LightGBM funcionam internamente. A ideia central é: em vez de fabricar dados sintéticos, o modelo penaliza mais os erros na classe minoritária durante o treinamento. Entenda por que isso é preferível a SMOTE quando as amostras positivas são heterogêneas (ataques de tipos diferentes não devem ser interpolados entre si).
-
-Pesquise também o conceito de focal loss — ele reduz a contribuição das amostras fáceis (tráfego benigno óbvio) e força o modelo a focar nos casos difíceis. Entenda em que situação focal loss seria melhor que class_weight, e em qual não faria diferença significativa.
-
-O que colocar no documento
-Adicione uma seção de "Decisões sobre class imbalance" com algo assim:
-
-SMOTE descartado: com apenas ~592 amostras maliciosas de tipos heterogêneos (credential stuffing, scanner), a interpolação entre exemplos de ataques diferentes geraria amostras sintéticas que não representam nenhum padrão real de ataque
-Estratégia escolhida: scale_pos_weight / class_weight com razão proporcional ao desbalanceamento (~83:1), porque penaliza erros na classe minoritária sem fabricar dados
-Alternativa considerada: focal loss — útil se o modelo tiver muitas predições "fáceis" com alta confiança no tráfego benigno, forçando foco nos casos de fronteira
-Métrica primária: não usar accuracy (inútil com 98.8% de negativos). Usar precision-recall AUC e F1, com atenção especial ao false positive rate dado o custo de $2.50 por bloqueio incorreto
-
 # Tasks
 - [x] 2.1 Exploratory Analysis & Label Joining
     - [x] Label join code (IP exato, CIDR range, TLS fingerprint — todos com filtro temporal)
