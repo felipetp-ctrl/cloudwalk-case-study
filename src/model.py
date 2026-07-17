@@ -17,12 +17,19 @@ META_COLUMNS = [
 
 EXCLUDE_SUFFIXES = ('_freq',)
 
+RESPONSE_SESSION_SUFFIXES = (
+    '_error_rate', '_unique_status_codes',
+    '_avg_response_time', '_std_response_time',
+    '_avg_body_size', '_std_body_size',
+)
+
 
 def get_feature_columns(df: pd.DataFrame) -> list[str]:
     return [
         c for c in df.columns
         if c not in META_COLUMNS
         and not c.endswith(EXCLUDE_SUFFIXES)
+        and not any(c.endswith(s) for s in RESPONSE_SESSION_SUFFIXES)
     ]
 
 
