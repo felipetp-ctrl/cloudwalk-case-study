@@ -17,9 +17,9 @@ def test_sample_weights():
 
 def test_build_training_dataset_runs_on_real_data():
     result = build_training_dataset(
-        'http_requests.csv',
-        'request_headers.csv',
-        'incident_labels.csv',
+        'data/http_requests.csv',
+        'data/request_headers.csv',
+        'data/incident_labels.csv',
     )
     session_cols = [c for c in result.columns if c.startswith(('ip_', 'tls_')) and c != 'tls_fingerprint' and c != 'tls_fingerprint_freq']
     assert len(session_cols) == 78
