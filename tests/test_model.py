@@ -154,6 +154,7 @@ def test_evaluate_model():
     assert "pr_auc" in metrics
     assert "roc_auc" in metrics
     assert "y_prob" in metrics
+    assert "threshold" in metrics
     assert 0 <= metrics["pr_auc"] <= 1
     assert len(metrics["y_prob"]) == len(y)
 

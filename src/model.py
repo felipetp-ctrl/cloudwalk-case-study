@@ -170,9 +170,23 @@ def train_model(
     return model
 
 
+def _find_best_f1_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    thresholds = np.unique(y_prob)
+    if len(thresholds) > 500:
+        thresholds = np.linspace(y_prob.min(), y_prob.max(), 500)
+    best_f1, best_t = 0.0, 0.5
+    for t in thresholds:
+        y_pred = (y_prob >= t).astype(int)
+        f = f1_score(y_true, y_pred, zero_division=0)
+        if f > best_f1:
+            best_f1, best_t = f, t
+    return best_t
+
+
 def evaluate_model(model: object, X: pd.DataFrame, y: pd.Series) -> dict:
     y_prob = model.predict_proba(X)[:, 1]
-    y_pred = (y_prob >= 0.5).astype(int)
+    threshold = _find_best_f1_threshold(y.values, y_prob)
+    y_pred = (y_prob >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(y, y_pred).ravel()
     return {
         "precision": precision_score(y, y_pred, zero_division=0),
@@ -182,6 +196,7 @@ def evaluate_model(model: object, X: pd.DataFrame, y: pd.Series) -> dict:
         "pr_auc": average_precision_score(y, y_prob),
         "roc_auc": roc_auc_score(y, y_prob),
         "y_prob": y_prob,
+        "threshold": threshold,
     }
 
 
