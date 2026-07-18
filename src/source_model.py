@@ -32,13 +32,18 @@ def compute_source_features(
     df: pd.DataFrame,
     min_requests: int = DEFAULT_MIN_REQUESTS,
 ) -> pd.DataFrame:
-    """Aggregate per-request data into per-source (IP-day) behavioral profiles.
+    """Aggregate per-request data into per-source behavioral profiles.
 
-    Only IPs with at least `min_requests` in a day are included — sources
-    with fewer requests lack enough signal for reliable classification and
-    fall back to the request-level model at the edge. Default is 2: DDoS
-    IPs in the dataset send a median of 4 requests/IP-day, so higher
-    thresholds miss most of the attack surface.
+    Uses IP-day granularity for training because incident labels are
+    available at daily resolution. In production, the same 13 features
+    are computed over sliding windows (1min, 5min, 30min) shared with
+    the Tier 1 session state — the features are proportions and ratios
+    that are invariant to window size.
+
+    Only IPs with at least `min_requests` are included — sources with
+    fewer requests fall back to the request-level model. Default is 2:
+    DDoS IPs send a median of 4 requests/IP-day, so higher thresholds
+    miss most of the attack surface.
     """
     df = df.copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
@@ -129,7 +134,11 @@ def propagate_source_scores(
     requests_df: pd.DataFrame,
     source_scores: pd.DataFrame,
 ) -> np.ndarray:
-    """Map source-level (IP-day) scores back to individual requests.
+    """Map source-level scores back to individual requests.
+
+    Uses IP-day joins for offline evaluation (matching the training
+    granularity). In production, scores are applied in real time as
+    the source model evaluates IPs across sliding windows.
 
     Returns an array of scores aligned with requests_df. Requests from
     IPs without a source score (below min_requests threshold) get 0.0.

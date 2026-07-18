@@ -38,7 +38,7 @@ For justification of each feature choice, see [`docs/2.2-feature-engineering-dec
 
 ### 2.3 — Baseline Model
 
-Four models were trained in a simple → complex progression ([`src/model.py`](src/model.py)), evaluated with temporal split (train days 6-9, test days 10-12) and 36 features:
+Four models were trained in a simple → complex progression ([`src/model.py`](src/model.py)), evaluated with temporal split (train days 6-9, test days 10-12) and 36 features. Precision, Recall, F1, and FPR are reported at threshold 0.5; PR-AUC and ROC-AUC are threshold-independent:
 
 | Model | CV PR-AUC | Test PR-AUC | ROC-AUC | Precision | Recall | F1 | FPR |
 |---|---|---|---|---|---|---|---|
@@ -55,7 +55,7 @@ Four models were trained in a simple → complex progression ([`src/model.py`](s
 - **zero_day_exploit: 0% recall** — only 6 samples, never seen in training, and without TLS fingerprint as a shortcut, there is no distinctive IP-level behavior to distinguish these from benign traffic.
 - **ddos_l7: 0% recall** — distributed attack where each participating IP sends only a few requests. Per-IP session features cannot capture the coordinated multi-IP nature of the attack. Individual requests look normal; it is the aggregate across many IPs that constitutes the attack.
 
-**Class imbalance** was handled via `scale_pos_weight=138.27` combined with confidence-based sample weights from `incident_labels.confidence` (`high=1.0`, `medium=0.6`, `low=0.3`). SMOTE was rejected because the 592 malicious samples span 5 heterogeneous attack types — interpolating between DDoS and credential stuffing samples produces synthetic examples that represent no real attack pattern. Hyperparameters were tuned with Optuna (n_estimators=589, num_leaves=66, max_depth=8, learning_rate=0.0380) using expanding-window temporal cross-validation (3 folds).
+**Class imbalance** was handled via `scale_pos_weight=138.27` combined with confidence-based sample weights from `incident_labels.confidence` (`high=1.0`, `medium=0.6`, `low=0.3`). SMOTE was rejected because the 592 malicious samples span 5 heterogeneous attack types — interpolating between DDoS and credential stuffing samples produces synthetic examples that represent no real attack pattern. Hyperparameters were tuned with Optuna using expanding-window temporal cross-validation (3 folds). Full best parameters: `n_estimators=589, num_leaves=66, max_depth=8, learning_rate=0.0380, subsample=0.687, colsample_bytree=0.641, min_child_samples=44, scale_pos_weight=138.27, reg_alpha=0.036, reg_lambda=0.001`.
 
 **Feature pruning** from 36 to 30 features (99% cumulative importance threshold): PR-AUC drops only 0.024 (from 0.8138 to 0.7894). This is much less lossy than before TLS feature removal, because importance is now distributed across genuine behavioral features rather than concentrated in a few TLS-identity proxies. Pruning is a viable option if latency constraints require it.
 
@@ -72,14 +72,14 @@ Analysis of the DDoS L7 pattern revealed that the attack signal lives at the **s
 | Methods per path | **4.0** (PUT/HEAD/DELETE/GET) | 0.33 |
 | HEAD usage | 20.6% | 1.6% (13x higher) |
 
-A **source-level classifier** ([`src/source_model.py`](src/source_model.py)) aggregates per-request data into IP-day behavioral profiles and classifies sources after they accumulate at least 2 requests. This is analogous to a production edge node that classifies an IP's intent after observing enough of its behavior, then applies the verdict to all subsequent requests. The threshold of 2 (rather than 5) reflects that DDoS IPs in this dataset send a median of only 4 requests per IP-day — higher thresholds miss most of the attack surface.
+A **source-level classifier** ([`src/source_model.py`](src/source_model.py)) aggregates per-request data into behavioral profiles and classifies sources after they accumulate at least 2 requests. The model is **trained on IP-day aggregates** because that is the granularity at which incident labels are available (`active_from`/`active_until` spans). In **production**, the same 13 features are computed over the same sliding windows used by Tier 1 (1min, 5min, 30min) — after an IP accumulates ≥2 requests in any window, the source model evaluates its behavioral profile and applies the verdict to subsequent requests. The features are proportions and ratios (`path_concentration`, `method_per_path`, `sensitive_ratio`) that are invariant to window size — the behavioral signature of a DDoS IP (single-endpoint focus, unusual method mix) appears whether computed over 1 minute or 1 day. The threshold of 2 (rather than 5) reflects that DDoS IPs in this dataset send a median of only 4 requests per IP-day — higher thresholds miss most of the attack surface.
 
-**Ensemble results** (source scores propagated back to requests, combined with request-level model via max rule):
+**Two-tier ensemble results** (source scores propagated back to requests, combined with request-level model via `max(request_prob, source_prob)`):
 
 | Approach | PR-AUC | Precision | Recall | F1 | DDoS Recall | CS Recall |
 |---|---|---|---|---|---|---|
-| Request-level only | 0.8138 | 1.000 | 0.490 | 0.658 | 0% | 87% |
-| **Source-level** (min_requests=2) | **0.9892** | **0.983** | **0.951** | **0.967** | **94%** | **100%** |
+| Request-level only (Tier 1) | 0.8138 | 1.000 | 0.490 | 0.658 | 0% | 87% |
+| **Two-tier ensemble** (min_requests=2) | **0.9892** | **0.983** | **0.951** | **0.967** | **94%** | **100%** |
 
 The source-level model recovers DDoS detection from 0% to 94% recall by operating at the right granularity — classifying IPs by aggregate behavior rather than individual requests. The precision drop (1.0 → 0.983) reflects 4 benign requests misclassified across ~21,000 test requests (FPR = 0.02%) — an acceptable trade-off given the $2.50 FP cost against the DDoS recall gain. The remaining 6% missed DDoS comes from IPs with only 1 request in their active day, which cannot be profiled at the source level and fall through to downstream defenses.
 
@@ -92,7 +92,7 @@ The source-level model recovers DDoS detection from 0% to 94% recall by operatin
 | 4 | 0.9112 | 1.000 | 78% | 0 |
 | 5 | 0.7821 | 1.000 | 47% | 0 |
 
-**Production integration:** At the edge, the request-level model scores every request immediately (<1ms). In parallel, per-IP counters accumulate. After an IP reaches `min_requests=2`, the source-level model classifies the IP. If flagged as malicious, all subsequent requests from that IP are blocked. This two-tier approach provides instant coverage for known patterns (credential stuffing) and delayed-but-effective coverage for distributed attacks (DDoS) once enough behavioral evidence accumulates.
+**Production integration:** At the edge, the request-level model (Tier 1) scores every request immediately (<1ms). In parallel, per-IP counters accumulate across the same three sliding windows used by Tier 1's session features (1min, 5min, 30min). After an IP reaches ≥2 requests in any window, the source-level model (Tier 2) computes 13 behavioral features over that window's requests and classifies the IP. If flagged, the IP is added to an in-memory blocklist — all subsequent requests are blocked without per-request inference. Shorter windows (1min) catch fast attacks like aggressive credential stuffing; longer windows (30min) catch slower distributed patterns. This two-tier approach provides instant coverage for known patterns (Tier 1) and progressively stronger coverage for distributed attacks (Tier 2) as behavioral evidence accumulates across each window.
 
 For full analysis including per-attack-type breakdown and threshold analysis, see [`docs/2.3-baseline-model-decisions.md`](docs/2.3-baseline-model-decisions.md).
 
@@ -107,7 +107,7 @@ For full analysis including per-attack-type breakdown and threshold analysis, se
 | Tier 2 (13f) | LightGBM Python | 0.461 | 0.596 | 0.694 |
 | Tier 2 (13f) | ONNX Runtime Python | 0.018 | 0.020 | 0.036 |
 
-Combined worst-case (both tiers sequential): 0.087ms — well within budget. In practice, Tier 2 runs asynchronously after IP accumulates ≥2 requests, so it does not add to the critical path. ONNX single-request p99 of 0.051ms (Tier 1) means 2.6 threads handle 50k req/s; Tier 2 needs only 1.8 threads.
+Combined worst-case (both tiers sequential): 0.087ms — well within budget. In practice, Tier 2 runs asynchronously when an IP accumulates ≥2 requests within any sliding window (1min, 5min, 30min), so it does not add to the critical path. ONNX single-request p99 of 0.051ms (Tier 1) means 2.6 threads handle 50k req/s; Tier 2 needs only 1.8 threads.
 
 **Memory footprint** — Tier 1 ONNX is 766.7 KB, Tier 2 ONNX is 384.3 KB, combined 1.15 MB. The WASM binary (including the tract runtime) is ~12 MB. Both fit comfortably within edge runtime memory limits (e.g., Cloudflare Workers: 128 MB). Runtime peak memory is 11.3 KB (Tier 1) + 1.8 KB (Tier 2) per inference.
 
@@ -116,48 +116,53 @@ Combined worst-case (both tiers sequential): 0.087ms — well within budget. In 
 **Serving architecture (two-tier):**
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                       Edge Node                           │
-│                                                           │
-│  HTTP Request                                             │
-│       │                                                   │
-│       ▼                                                   │
-│  ┌─────────────┐    ┌──────────────────┐                 │
-│  │ IP Blocklist │───▶│ IP flagged?       │                 │
-│  │  (in-memory) │    │ (source model)    │                 │
-│  └─────────────┘    └────────┬─────────┘                 │
-│                        yes /   \ no                       │
-│                           /     \                         │
-│               ┌──────────▼┐   ┌─▼────────────┐           │
-│               │  Block    │   │  Request-Level│           │
-│               │  (fast)   │   │  ONNX Model   │           │
-│               └─────┬─────┘   │  (36 features)│           │
-│                     │         └────────┬──────┘           │
-│                     │            score (0-1)              │
-│                     │                 │                    │
-│                     │        ┌────────▼────────┐          │
-│                     │        │  score ≥ 0.50?  │          │
-│                     │        └────────┬────────┘          │
-│                     │          yes /   \ no               │
-│                     │             /     \                  │
-│                     │  ┌─────────▼┐   ┌─▼──────────┐     │
-│                     │  │  Block / │   │ Forward to  │     │
-│                     │  │ Throttle │   │   Origin    │     │
-│                     │  └────┬─────┘   └─────┬──────┘     │
-│                     │       │               │             │
-│                     └───┬───┴───────────────┘             │
-│                         ▼                                 │
-│              ┌────────────────────┐                       │
-│              │  Update IP counter │                       │
-│              │  + async log       │                       │
-│              └────────┬───────────┘                       │
-│                       ▼                                   │
-│              ┌────────────────────┐                       │
-│              │  IP requests ≥ 2?  │                       │
-│              │  → source model    │                       │
-│              │  → update blocklist│                       │
-│              └────────────────────┘                       │
-└──────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                          Edge Node                            │
+│                                                               │
+│  HTTP Request                                                 │
+│       │                                                       │
+│       ▼                                                       │
+│  ┌─────────────┐    ┌──────────────────┐                      │
+│  │ IP Blocklist │───▶│ IP flagged?       │                     │
+│  │  (in-memory) │    │ (source model)    │                     │
+│  └─────────────┘    └────────┬─────────┘                      │
+│                        yes /   \ no                            │
+│                           /     \                              │
+│               ┌──────────▼┐   ┌─▼────────────┐                │
+│               │  Block    │   │  Request-Level│                │
+│               │  (fast)   │   │  ONNX Model   │                │
+│               └─────┬─────┘   │  (36 features)│                │
+│                     │         └────────┬──────┘                │
+│                     │            score (0-1)                   │
+│                     │                 │                         │
+│                     │        ┌────────▼────────┐               │
+│                     │        │  score ≥ 0.50?  │               │
+│                     │        └────────┬────────┘               │
+│                     │          yes /   \ no                    │
+│                     │             /     \                       │
+│                     │  ┌─────────▼┐   ┌─▼──────────┐          │
+│                     │  │  Block / │   │ Forward to  │          │
+│                     │  │ Throttle │   │   Origin    │          │
+│                     │  └────┬─────┘   └─────┬──────┘          │
+│                     │       │               │                  │
+│                     └───┬───┴───────────────┘                  │
+│                         ▼                                      │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  Update IP counters (shared with Tier 1 session state)  │   │
+│  │  Windows: 1min, 5min, 30min                             │   │
+│  └────────────────────────┬────────────────────────────────┘   │
+│                           ▼                                    │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  IP reached ≥ 2 requests in any window?                 │   │
+│  │  → compute 13 source features over that window          │   │
+│  │  → source model classifies IP                           │   │
+│  │  → if malicious: add to blocklist                       │   │
+│  │                                                         │   │
+│  │  1min:  catches fast attacks (aggressive brute-force)   │   │
+│  │  5min:  catches moderate-speed patterns                 │   │
+│  │  30min: catches slow/distributed attacks (DDoS L7)      │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **Model updates** use a pull-based flow: edge nodes poll the model registry every 5 minutes, run new and old models in shadow mode for 10 minutes, then atomically switch. Automatic rollback triggers fire if p99 latency exceeds 4ms, block rate doubles, or error rate exceeds 0.01%.
@@ -174,9 +179,9 @@ For full details including canary deployment, rollback triggers, and monitoring 
 
 The 21 session features require per-IP sliding-window state, but edge nodes are stateless and requests from the same source may hit different nodes. The proposed architecture uses **consistent hashing on `source_ip` at the load balancer** to route all requests from the same IP to the same edge node. This is not a novel technique — CDN providers like Cloudflare and Fastly already use consistent hashing for cache affinity, and the same mechanism provides session affinity for free.
 
-Each edge node maintains a **local `HashMap<SourceIP, SessionCounters>`** with TTL-based eviction (30 minutes, matching the longest feature window). Each entry stores 21 counters (7 metrics × 3 windows × 1 granularity), consuming ~0.5-1 KB per active source. With 10,000 concurrently active sources per node, total state is ~5-10 MB — negligible against a typical edge runtime's memory budget. Session lookups are O(1) hash table operations with zero network latency, keeping the total budget at ~1ms feature extraction + ~1ms inference = 2ms, with 3ms headroom.
+Each edge node maintains a **local `HashMap<SourceIP, SessionCounters>`** with TTL-based eviction (30 minutes, matching the longest feature window). Each entry stores counters for both tiers: 21 Tier 1 session counters (7 metrics × 3 windows) plus the raw data needed to compute Tier 2's 13 source-level features across the same three windows — consuming ~0.5-1 KB per active source. Both tiers share this state: Tier 1 reads its session features on every request, and Tier 2 computes its behavioral profile when an IP accumulates ≥2 requests in any window. With 10,000 concurrently active sources per node, total state is ~5-10 MB — negligible against a typical edge runtime's memory budget. Session lookups are O(1) hash table operations with zero network latency, keeping the total budget at ~1ms feature extraction + ~1ms inference = 2ms, with 3ms headroom.
 
-**Graceful degradation when state is unavailable:** If an edge node restarts or hits memory pressure, the session state is lost. The model falls back to the 15 per-request features only — degraded but still functional. State repopulates organically as new requests arrive; full session capacity is restored within 30 minutes (the longest window). This is an acceptable tradeoff: brief degradation on a single node does not compromise the system globally, and per-request features still catch the most obvious attacks (bot user-agents, sensitive endpoint targeting).
+**Graceful degradation when state is unavailable:** If an edge node restarts or hits memory pressure, the session state is lost. Tier 1 falls back to the 15 per-request features only, and Tier 2 is temporarily disabled (no accumulated behavior to evaluate). State repopulates organically as new requests arrive; Tier 2 becomes active again within seconds (after ≥2 requests from the same IP), and full 30-minute session capacity is restored within 30 minutes. This is an acceptable tradeoff: brief degradation on a single node does not compromise the system globally, and per-request features still catch the most obvious attacks (bot user-agents, sensitive endpoint targeting).
 
 **Cross-node gap:** IP rotation by attackers causes requests to land on different nodes, breaking session continuity. With TLS-granularity features removed, the primary mitigation is the time window structure itself: the most damaging attack types that the model can detect (credential stuffing) require high request volume from fixed IPs within short windows, which the 1-minute and 5-minute features capture before the attacker rotates. For distributed attacks like L7 DDoS — where IP rotation is inherent to the attack pattern — the model's per-IP features are fundamentally insufficient, and defense relies on origin-side rate limiting and WAF rules (see Section 3.2).
 
