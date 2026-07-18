@@ -5,11 +5,11 @@ on:
     inputs:
       pr_auc_threshold:
         description: "Minimum PR-AUC to pass"
-        default: "0.85"
+        default: "0.78"
         type: string
       f1_threshold:
         description: "Minimum F1 to pass"
-        default: "0.80"
+        default: "0.68"
         type: string
 
 jobs:

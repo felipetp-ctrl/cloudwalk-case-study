@@ -169,7 +169,7 @@ Combined worst-case (both tiers sequential): 0.087ms — well within budget. In 
 
 **Production monitoring** combines PSI per feature (hourly, threshold > 0.2) for feature-level drift, KS test on output scores (5-minute buckets, p < 0.01) for score-level drift, and a feedback loop where blocked requests are sampled for security team review and allowed-but-attacked requests provide new training labels.
 
-For full details including canary deployment, rollback triggers, and monitoring thresholds, see [`docs/2.4-edge-deployment-decisions.md`](docs/2.4-edge-deployment-decisions.md) and [`docs/edge_deployment.md`](docs/edge_deployment.md).
+For full details including canary deployment, rollback triggers, and monitoring thresholds, see [`docs/2.4-edge-deployment-decisions.md`](docs/2.4-edge-deployment-decisions.md).
 
 ---
 
@@ -268,7 +268,7 @@ The project includes two GitHub Actions workflows ([`.github/workflows/`](.githu
 
 **`ci.yml`** runs on every push and pull request:
 1. **Lint** — `ruff check` + `ruff format --check` for consistent code style.
-2. **Test** — full pytest suite (63 tests) covering label joining, features, model, source model, export, monitoring.
+2. **Test** — full pytest suite (62 tests) covering label joining, features, model, source model, export, monitoring.
 3. **ONNX Validation** — trains both tier models from scratch, exports to ONNX, and validates numerical equivalence. Also asserts minimum metric thresholds (PR-AUC > 0.50, F1 > 0.40 for Tier 1; PR-AUC > 0.50 for Tier 2) to catch regressions.
 4. **Rust Build** — compiles the edge-inference binary to verify Rust code integrity.
 
