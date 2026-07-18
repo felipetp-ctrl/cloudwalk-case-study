@@ -6,11 +6,13 @@ from onnxmltools.convert.common.data_types import FloatTensorType
 
 
 def export_to_onnx(model, feature_names: list[str], output_path: str) -> str:
-    initial_type = [('features', FloatTensorType([None, len(feature_names)]))]
+    initial_type = [("features", FloatTensorType([None, len(feature_names)]))]
     onnx_model = onnxmltools.convert_lightgbm(
-        model, initial_types=initial_type, zipmap=False,
+        model,
+        initial_types=initial_type,
+        zipmap=False,
     )
-    with open(output_path, 'wb') as f:
+    with open(output_path, "wb") as f:
         f.write(onnx_model.SerializeToString())
     return output_path
 
@@ -27,7 +29,7 @@ def validate_onnx_export(model, onnx_path: str, X_sample: pd.DataFrame) -> dict:
     abs_errors = np.abs(original_probs - onnx_probs)
     max_err = float(abs_errors.max())
     return {
-        'max_abs_error': max_err,
-        'mean_abs_error': float(abs_errors.mean()),
-        'match': max_err < 1e-6,
+        "max_abs_error": max_err,
+        "mean_abs_error": float(abs_errors.mean()),
+        "match": max_err < 1e-6,
     }

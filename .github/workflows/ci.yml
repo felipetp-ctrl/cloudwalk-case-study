@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff check src/ tests/
+      - run: ruff format --check src/ tests/
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: pytest -v --tb=short
+
+  onnx-validation:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run pipeline and validate ONNX export
+        run: |
+          python -c "
+          from src.pipeline import build_training_dataset
+          from src.model import get_feature_columns, temporal_train_test_split, train_model, evaluate_model
+          from src.export import export_to_onnx, validate_onnx_export
+
+          df = build_training_dataset('data/http_requests.csv', 'data/request_headers.csv', 'data/incident_labels.csv')
+          train, test = temporal_train_test_split(df, '2025-01-10')
+          features = get_feature_columns(train)
+          X_train, y_train = train[features], train['is_malicious'].astype(int)
+          X_test, y_test = test[features], test['is_malicious'].astype(int)
+
+          model = train_model('lgbm', {'n_estimators': 100, 'verbose': -1}, X_train, y_train, train['sample_weight'])
+          metrics = evaluate_model(model, X_test, y_test)
+
+          assert metrics['pr_auc'] > 0.85, f'PR-AUC {metrics[\"pr_auc\"]:.4f} below threshold 0.85'
+          assert metrics['f1'] > 0.80, f'F1 {metrics[\"f1\"]:.4f} below threshold 0.80'
+          print(f'Model metrics — PR-AUC: {metrics[\"pr_auc\"]:.4f}, F1: {metrics[\"f1\"]:.4f}, Precision: {metrics[\"precision\"]:.4f}, Recall: {metrics[\"recall\"]:.4f}')
+
+          export_to_onnx(model, features, 'model_ci.onnx')
+          result = validate_onnx_export(model, 'model_ci.onnx', X_test)
+          assert result['match'], f'ONNX mismatch: max_abs_error={result[\"max_abs_error\"]}'
+          print(f'ONNX validation — max_abs_error: {result[\"max_abs_error\"]:.2e}, match: {result[\"match\"]}')
+          "
+
+  rust-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: edge-inference
+      - name: Build edge-inference
+        working-directory: edge-inference
+        run: cargo build --release

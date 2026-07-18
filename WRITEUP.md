@@ -198,3 +198,37 @@ When the attacker randomizes TLS fingerprints and adds timing jitter, the model 
 **Short-term (days):** Retrain the model *excluding* all TLS features, forcing it to learn behavioral patterns: timing regularity (`inter_request_time_std`), endpoint diversity (`unique_paths`), request volume (`request_count`), and sensitive endpoint targeting (`sensitive_endpoint_ratio`). The IP + per-request feature floor is ~0.71 PR-AUC on the current dataset, but focused retraining with behavioral emphasis — combined with the new labeled data from the security team's investigation — should improve this. Additionally, introduce spoofing-resistant features that are harder to fake than JA3: HTTP/2 frame ordering, header canonicalization order, and TCP/IP stack fingerprinting (window size, TTL, TCP options).
 
 **Long-term (weeks):** Adopt an **ensemble architecture** where a fast per-request model (15 features, <0.1ms) runs as a first pass on all traffic, and the full session-based model runs only on requests that score above a low suspicion threshold. This reduces dependence on any single feature family and limits the blast radius of feature evasion. Incorporate **adversarial training** — inject TLS-randomized attack samples during training so the model learns to classify without relying on TLS identity. Finally, implement **feature rotation**: periodically vary which features the model weights most heavily, increasing the cost for attackers to reverse-engineer and evade the detection logic.
+
+---
+
+## Production Readiness
+
+### CI/CD Pipeline
+
+The project includes two GitHub Actions workflows ([`.github/workflows/`](.github/workflows/)):
+
+**`ci.yml`** runs on every push and pull request:
+1. **Lint** — `ruff check` + `ruff format --check` for consistent code style.
+2. **Test** — full pytest suite (53 tests) covering label joining, features, model, export, monitoring.
+3. **ONNX Validation** — trains a model from scratch, exports to ONNX, and validates numerical equivalence. Also asserts minimum metric thresholds (PR-AUC > 0.85, F1 > 0.80) to catch regressions.
+4. **Rust Build** — compiles the edge-inference binary to verify Rust code integrity.
+
+**`model-validation.yml`** runs on-demand (`workflow_dispatch`) for full model validation:
+- Runs Optuna hyperparameter tuning (30 trials) with temporal cross-validation.
+- Evaluates against configurable metric thresholds (PR-AUC, F1).
+- Runs data drift detection and prediction stability analysis.
+- Exports the validated ONNX model and a JSON report as GitHub artifacts.
+
+This pipeline validates the entire chain — from raw data to deployable ONNX model — ensuring that code changes never silently degrade model quality.
+
+### Model Monitoring
+
+The monitoring module ([`src/monitoring.py`](src/monitoring.py)) implements three production monitoring patterns:
+
+**Data drift detection** — Kolmogorov-Smirnov test per feature between reference (training) and current (production) distributions. Features where p < 0.05 are flagged as drifted. In a security context, drift in session features like `request_count` or `inter_request_time_std` can signal new attack patterns that the model hasn't been trained on.
+
+**Prediction stability** — Population Stability Index (PSI) between reference and current score distributions, plus alert rate tracking. PSI < 0.1 indicates stable predictions; PSI > 0.25 signals significant shift requiring investigation. For an edge security model, a sudden spike in alert rate could mean either a real attack wave or model degradation — the PSI helps distinguish between the two.
+
+**Performance tracking** — sliding-window computation of precision, recall, and FPR with degradation detection against baseline metrics. Windows where metrics drop below 90% of baseline are flagged. This catches gradual model decay that per-request metrics would miss.
+
+The `generate_monitoring_report()` function consolidates all signals into a single report with a `needs_retraining` flag, enabling automated retraining triggers in production. All monitoring functions are covered by 14 unit tests simulating healthy, drifted, and degraded scenarios.

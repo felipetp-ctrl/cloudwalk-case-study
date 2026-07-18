@@ -3,30 +3,54 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
-    precision_score, recall_score, f1_score,
-    average_precision_score, roc_auc_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    average_precision_score,
+    roc_auc_score,
     confusion_matrix,
 )
+import optuna
 
 META_COLUMNS = [
-    'request_id', 'timestamp', 'is_malicious', 'attack_class', 'sample_weight', 'day',
-    'source_ip', 'method', 'path', 'status_code', 'user_agent', 'tls_fingerprint',
-    'country', 'asn', 'confidence', 'incident_id', 'source_identifier',
-    'response_time_ms', 'body_size_bytes', 'status_code_group',
+    "request_id",
+    "timestamp",
+    "is_malicious",
+    "attack_class",
+    "sample_weight",
+    "day",
+    "source_ip",
+    "method",
+    "path",
+    "status_code",
+    "user_agent",
+    "tls_fingerprint",
+    "country",
+    "asn",
+    "confidence",
+    "incident_id",
+    "source_identifier",
+    "response_time_ms",
+    "body_size_bytes",
+    "status_code_group",
 ]
 
-EXCLUDE_SUFFIXES = ('_freq',)
+EXCLUDE_SUFFIXES = ("_freq",)
 
 RESPONSE_SESSION_SUFFIXES = (
-    '_error_rate', '_unique_status_codes',
-    '_avg_response_time', '_std_response_time',
-    '_avg_body_size', '_std_body_size',
+    "_error_rate",
+    "_unique_status_codes",
+    "_avg_response_time",
+    "_std_response_time",
+    "_avg_body_size",
+    "_std_body_size",
 )
 
 
 def get_feature_columns(df: pd.DataFrame) -> list[str]:
     return [
-        c for c in df.columns
+        c
+        for c in df.columns
         if c not in META_COLUMNS
         and not c.endswith(EXCLUDE_SUFFIXES)
         and not any(c.endswith(s) for s in RESPONSE_SESSION_SUFFIXES)
@@ -36,8 +60,8 @@ def get_feature_columns(df: pd.DataFrame) -> list[str]:
 def temporal_train_test_split(
     df: pd.DataFrame, test_date: str
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    ts = pd.to_datetime(df['timestamp'], utc=True)
-    cutoff = pd.Timestamp(test_date, tz='UTC')
+    ts = pd.to_datetime(df["timestamp"], utc=True)
+    cutoff = pd.Timestamp(test_date, tz="UTC")
     train = df[ts < cutoff].copy().reset_index(drop=True)
     test = df[ts >= cutoff].copy().reset_index(drop=True)
     return train, test
@@ -47,9 +71,13 @@ def stratified_train_test_split(
     df: pd.DataFrame, test_size: float = 0.3, random_state: int = 42
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     from sklearn.model_selection import train_test_split
-    label = df['attack_class'].fillna('benign')
+
+    label = df["attack_class"].fillna("benign")
     train, test = train_test_split(
-        df, test_size=test_size, random_state=random_state, stratify=label,
+        df,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=label,
     )
     return train.reset_index(drop=True), test.reset_index(drop=True)
 
@@ -57,7 +85,7 @@ def stratified_train_test_split(
 def make_time_series_cv_splits(
     df: pd.DataFrame, min_train_days: int = 1
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    ts = pd.to_datetime(df['timestamp'], utc=True)
+    ts = pd.to_datetime(df["timestamp"], utc=True)
     dates = sorted(ts.dt.date.unique())
     splits = []
     for i in range(min_train_days, len(dates)):
@@ -75,7 +103,8 @@ def make_stratified_cv_splits(
     y: pd.Series, attack_classes: pd.Series, n_splits: int = 5, random_state: int = 42
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     from sklearn.model_selection import StratifiedKFold
-    label = attack_classes.fillna('benign')
+
+    label = attack_classes.fillna("benign")
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     return list(skf.split(y, label))
 
@@ -93,39 +122,41 @@ def train_model(
     y: pd.Series,
     sample_weights: pd.Series | None = None,
 ) -> object:
-    if model_name == 'lr':
+    if model_name == "lr":
         lr_params = {
-            'solver': 'saga',
-            'l1_ratio': 0.5,
+            "solver": "saga",
+            "l1_ratio": 0.5,
         }
         lr_params.update(params)
         model = LogisticRegression(
-            class_weight='balanced',
+            class_weight="balanced",
             max_iter=2000,
-            penalty='elasticnet',
+            penalty="elasticnet",
             **lr_params,
         )
-    elif model_name == 'rf':
+    elif model_name == "rf":
         model = RandomForestClassifier(
-            class_weight='balanced',
+            class_weight="balanced",
             random_state=42,
             **params,
         )
-    elif model_name == 'xgb':
+    elif model_name == "xgb":
         import xgboost as xgb
+
         default_params = {
-            'scale_pos_weight': _count_class_ratio(y),
-            'random_state': 42,
-            'eval_metric': 'aucpr',
+            "scale_pos_weight": _count_class_ratio(y),
+            "random_state": 42,
+            "eval_metric": "aucpr",
         }
         default_params.update(params)
         model = xgb.XGBClassifier(**default_params)
-    elif model_name == 'lgbm':
+    elif model_name == "lgbm":
         import lightgbm as lgb
+
         default_params = {
-            'scale_pos_weight': _count_class_ratio(y),
-            'random_state': 42,
-            'metric': 'average_precision',
+            "scale_pos_weight": _count_class_ratio(y),
+            "random_state": 42,
+            "metric": "average_precision",
         }
         default_params.update(params)
         model = lgb.LGBMClassifier(**default_params)
@@ -134,25 +165,23 @@ def train_model(
 
     fit_params = {}
     if sample_weights is not None:
-        fit_params['sample_weight'] = sample_weights.values
+        fit_params["sample_weight"] = sample_weights.values
     model.fit(X, y, **fit_params)
     return model
 
 
-def evaluate_model(
-    model: object, X: pd.DataFrame, y: pd.Series
-) -> dict:
+def evaluate_model(model: object, X: pd.DataFrame, y: pd.Series) -> dict:
     y_prob = model.predict_proba(X)[:, 1]
     y_pred = (y_prob >= 0.5).astype(int)
     tn, fp, fn, tp = confusion_matrix(y, y_pred).ravel()
     return {
-        'precision': precision_score(y, y_pred, zero_division=0),
-        'recall': recall_score(y, y_pred, zero_division=0),
-        'f1': f1_score(y, y_pred, zero_division=0),
-        'fpr': fp / (fp + tn) if (fp + tn) > 0 else 0.0,
-        'pr_auc': average_precision_score(y, y_prob),
-        'roc_auc': roc_auc_score(y, y_prob),
-        'y_prob': y_prob,
+        "precision": precision_score(y, y_pred, zero_division=0),
+        "recall": recall_score(y, y_pred, zero_division=0),
+        "f1": f1_score(y, y_pred, zero_division=0),
+        "fpr": fp / (fp + tn) if (fp + tn) > 0 else 0.0,
+        "pr_auc": average_precision_score(y, y_prob),
+        "roc_auc": roc_auc_score(y, y_prob),
+        "y_prob": y_prob,
     }
 
 
@@ -173,52 +202,49 @@ def evaluate_per_attack_type(
     return results
 
 
-import optuna
-
-
 def _suggest_params(trial: optuna.Trial, model_name: str) -> dict:
-    if model_name == 'lr':
-        l1_ratio = trial.suggest_float('l1_ratio', 0.0, 1.0)
+    if model_name == "lr":
+        l1_ratio = trial.suggest_float("l1_ratio", 0.0, 1.0)
         return {
-            'C': trial.suggest_float('C', 1e-4, 1e2, log=True),
-            'l1_ratio': l1_ratio,
-            'solver': 'saga',
+            "C": trial.suggest_float("C", 1e-4, 1e2, log=True),
+            "l1_ratio": l1_ratio,
+            "solver": "saga",
         }
-    elif model_name == 'rf':
+    elif model_name == "rf":
         return {
-            'n_estimators': trial.suggest_int('n_estimators', 100, 500),
-            'max_depth': trial.suggest_int('max_depth', 5, 20),
-            'min_samples_leaf': trial.suggest_int('min_samples_leaf', 5, 50),
-            'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2']),
+            "n_estimators": trial.suggest_int("n_estimators", 100, 500),
+            "max_depth": trial.suggest_int("max_depth", 5, 20),
+            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 5, 50),
+            "max_features": trial.suggest_categorical("max_features", ["sqrt", "log2"]),
         }
-    elif model_name == 'xgb':
+    elif model_name == "xgb":
         return {
-            'n_estimators': trial.suggest_int('n_estimators', 100, 800),
-            'max_depth': trial.suggest_int('max_depth', 3, 10),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
-            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-            'min_child_weight': trial.suggest_int('min_child_weight', 1, 20),
-            'scale_pos_weight': trial.suggest_float('scale_pos_weight', 50, 150),
-            'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 10, log=True),
-            'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 10, log=True),
-            'verbosity': 0,
-            'eval_metric': 'aucpr',
+            "n_estimators": trial.suggest_int("n_estimators", 100, 800),
+            "max_depth": trial.suggest_int("max_depth", 3, 10),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 20),
+            "scale_pos_weight": trial.suggest_float("scale_pos_weight", 50, 150),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10, log=True),
+            "verbosity": 0,
+            "eval_metric": "aucpr",
         }
-    elif model_name == 'lgbm':
+    elif model_name == "lgbm":
         return {
-            'n_estimators': trial.suggest_int('n_estimators', 100, 800),
-            'num_leaves': trial.suggest_int('num_leaves', 15, 127),
-            'max_depth': trial.suggest_int('max_depth', 3, 10),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
-            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-            'min_child_samples': trial.suggest_int('min_child_samples', 5, 50),
-            'scale_pos_weight': trial.suggest_float('scale_pos_weight', 50, 150),
-            'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 10, log=True),
-            'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 10, log=True),
-            'verbose': -1,
-            'metric': 'average_precision',
+            "n_estimators": trial.suggest_int("n_estimators", 100, 800),
+            "num_leaves": trial.suggest_int("num_leaves", 15, 127),
+            "max_depth": trial.suggest_int("max_depth", 3, 10),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "min_child_samples": trial.suggest_int("min_child_samples", 5, 50),
+            "scale_pos_weight": trial.suggest_float("scale_pos_weight", 50, 150),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10, log=True),
+            "verbose": -1,
+            "metric": "average_precision",
         }
     else:
         raise ValueError(f"Unknown model: {model_name}")
@@ -242,8 +268,9 @@ def create_objective(
                 continue
             model = train_model(model_name, params, X_train, y_train, w_train)
             metrics = evaluate_model(model, X_val, y_val)
-            scores.append(metrics['pr_auc'])
+            scores.append(metrics["pr_auc"])
         return np.mean(scores) if scores else 0.0
+
     return objective
 
 
@@ -256,7 +283,7 @@ def tune_model(
     n_trials: int = 50,
 ) -> tuple[dict, optuna.study.Study]:
     study = optuna.create_study(
-        direction='maximize',
+        direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=42),
         pruner=optuna.pruners.MedianPruner(),
     )
@@ -268,9 +295,9 @@ def tune_model(
 def get_feature_importance(
     model: object, model_name: str, feature_names: list[str]
 ) -> pd.Series:
-    if model_name == 'lr':
+    if model_name == "lr":
         imp = np.abs(model.coef_[0])
-    elif model_name in ('rf', 'xgb', 'lgbm'):
+    elif model_name in ("rf", "xgb", "lgbm"):
         imp = model.feature_importances_
     else:
         raise ValueError(f"Unknown model: {model_name}")
@@ -278,9 +305,7 @@ def get_feature_importance(
     return series.sort_values(ascending=False)
 
 
-def prune_features(
-    importance: pd.Series, threshold: float = 0.95
-) -> list[str]:
+def prune_features(importance: pd.Series, threshold: float = 0.95) -> list[str]:
     total = importance.sum()
     if total == 0:
         return list(importance.index)
@@ -301,7 +326,7 @@ def find_cost_optimal_threshold(
         base_rate = y_true.mean()
     thresholds = np.linspace(0.01, 0.99, 500)
     best_threshold = 0.5
-    best_cost = float('inf')
+    best_cost = float("inf")
     for t in thresholds:
         y_pred = (y_prob >= t).astype(int)
         tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
@@ -321,9 +346,9 @@ def evaluate_at_threshold(
     y_pred = (y_prob >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(y, y_pred).ravel()
     return {
-        'precision': precision_score(y, y_pred, zero_division=0),
-        'recall': recall_score(y, y_pred, zero_division=0),
-        'f1': f1_score(y, y_pred, zero_division=0),
-        'fpr': fp / (fp + tn) if (fp + tn) > 0 else 0.0,
-        'threshold': threshold,
+        "precision": precision_score(y, y_pred, zero_division=0),
+        "recall": recall_score(y, y_pred, zero_division=0),
+        "f1": f1_score(y, y_pred, zero_division=0),
+        "fpr": fp / (fp + tn) if (fp + tn) > 0 else 0.0,
+        "threshold": threshold,
     }

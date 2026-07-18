@@ -1,0 +1,103 @@
+name: Model Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_auc_threshold:
+        description: "Minimum PR-AUC to pass"
+        default: "0.85"
+        type: string
+      f1_threshold:
+        description: "Minimum F1 to pass"
+        default: "0.80"
+        type: string
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Train and evaluate model
+        env:
+          PR_AUC_THRESHOLD: ${{ inputs.pr_auc_threshold }}
+          F1_THRESHOLD: ${{ inputs.f1_threshold }}
+        run: |
+          python -c "
+          import json, os
+          from src.pipeline import build_training_dataset
+          from src.model import (
+              get_feature_columns, temporal_train_test_split, train_model,
+              evaluate_model, evaluate_per_attack_type, tune_model,
+              make_time_series_cv_splits,
+          )
+          from src.export import export_to_onnx, validate_onnx_export
+          from src.monitoring import detect_data_drift, monitor_predictions
+
+          pr_auc_min = float(os.environ['PR_AUC_THRESHOLD'])
+          f1_min = float(os.environ['F1_THRESHOLD'])
+
+          df = build_training_dataset('data/http_requests.csv', 'data/request_headers.csv', 'data/incident_labels.csv')
+          train, test = temporal_train_test_split(df, '2025-01-10')
+          features = get_feature_columns(train)
+          X_train, y_train = train[features], train['is_malicious'].astype(int)
+          X_test, y_test = test[features], test['is_malicious'].astype(int)
+
+          cv_splits = make_time_series_cv_splits(train)
+          best_params, _ = tune_model('lgbm', X_train, y_train, train['sample_weight'], cv_splits, n_trials=30)
+          best_params['verbose'] = -1
+          model = train_model('lgbm', best_params, X_train, y_train, train['sample_weight'])
+
+          metrics = evaluate_model(model, X_test, y_test)
+          per_attack = evaluate_per_attack_type(model, X_test, y_test, test['attack_class'])
+
+          drift = detect_data_drift(X_train, X_test)
+          pred_report = monitor_predictions(model.predict_proba(X_train)[:, 1], model.predict_proba(X_test)[:, 1])
+
+          export_to_onnx(model, features, 'model_validated.onnx')
+          onnx_result = validate_onnx_export(model, 'model_validated.onnx', X_test)
+
+          report = {
+              'metrics': {k: round(v, 4) for k, v in metrics.items() if k != 'y_prob'},
+              'per_attack_recall': {k: round(v, 4) for k, v in per_attack.items()},
+              'best_params': best_params,
+              'drift_summary': {
+                  'features_drifted': len(drift[drift['drifted']]),
+                  'total_features': len(drift),
+              },
+              'prediction_stability': {
+                  'psi': round(pred_report['psi'], 4),
+                  'alert_rate_reference': round(pred_report['alert_rate_reference'], 4),
+                  'alert_rate_current': round(pred_report['alert_rate_current'], 4),
+              },
+              'onnx_validation': onnx_result,
+              'thresholds': {'pr_auc': pr_auc_min, 'f1': f1_min},
+              'gate_passed': metrics['pr_auc'] >= pr_auc_min and metrics['f1'] >= f1_min,
+          }
+
+          with open('validation_report.json', 'w') as f:
+              json.dump(report, f, indent=2, default=str)
+
+          print(json.dumps(report, indent=2, default=str))
+
+          assert report['gate_passed'], f'Model gate failed — PR-AUC: {metrics[\"pr_auc\"]:.4f}, F1: {metrics[\"f1\"]:.4f}'
+          "
+
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-validation-report
+          path: validation_report.json
+
+      - name: Upload validated ONNX model
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-validated-onnx
+          path: model_validated.onnx
