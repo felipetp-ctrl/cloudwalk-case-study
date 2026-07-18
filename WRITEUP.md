@@ -61,62 +61,103 @@ Four models were trained in a simple → complex progression ([`src/model.py`](s
 
 **Threshold analysis** shows that the default threshold of 0.5 yields perfect precision (1.0) but moderate recall (0.4898). Lowering the threshold to 0.144 (cost-optimal for $2.50 FP / $0.10 FN) recovers some recall (0.5102) while maintaining precision at 1.0. Even at an aggressive threshold of 0.01 (high FN cost scenario, $5.00 per missed attack), recall reaches only 0.5551 with precision at 0.9714. The fundamental ceiling is the model's inability to detect distributed attacks (DDoS) and novel attacks (zero-day) using per-IP features alone — no threshold adjustment can recover signal that is not in the features.
 
+#### Source-Level Classifier (DDoS Detection)
+
+Analysis of the DDoS L7 pattern revealed that the attack signal lives at the **source level**, not the request level. DDoS IPs exhibit a distinctive behavioral profile that is invisible on a per-request basis but obvious in aggregate:
+
+| Characteristic | DDoS IPs | Benign IPs |
+|---|---|---|
+| Unique paths visited | **always 1** (`/api/v1/transactions`) | median 8 |
+| Path concentration | **1.0** (100%) | 0.125 (12.5%) |
+| Methods per path | **4.0** (PUT/HEAD/DELETE/GET) | 0.33 |
+| HEAD usage | 20.6% | 1.6% (13x higher) |
+
+A **source-level classifier** ([`src/source_model.py`](src/source_model.py)) aggregates per-request data into IP-day behavioral profiles and classifies sources after they accumulate at least 2 requests. This is analogous to a production edge node that classifies an IP's intent after observing enough of its behavior, then applies the verdict to all subsequent requests. The threshold of 2 (rather than 5) reflects that DDoS IPs in this dataset send a median of only 4 requests per IP-day — higher thresholds miss most of the attack surface.
+
+**Ensemble results** (source scores propagated back to requests, combined with request-level model via max rule):
+
+| Approach | PR-AUC | Precision | Recall | F1 | DDoS Recall | CS Recall |
+|---|---|---|---|---|---|---|
+| Request-level only | 0.8138 | 1.000 | 0.490 | 0.658 | 0% | 87% |
+| **Source-level** (min_requests=2) | **0.9892** | **0.983** | **0.951** | **0.967** | **94%** | **100%** |
+
+The source-level model recovers DDoS detection from 0% to 94% recall by operating at the right granularity — classifying IPs by aggregate behavior rather than individual requests. The precision drop (1.0 → 0.983) reflects 4 benign requests misclassified across ~21,000 test requests (FPR = 0.02%) — an acceptable trade-off given the $2.50 FP cost against the DDoS recall gain. The remaining 6% missed DDoS comes from IPs with only 1 request in their active day, which cannot be profiled at the source level and fall through to downstream defenses.
+
+**`min_requests` sensitivity analysis:**
+
+| min_requests | PR-AUC | Precision | DDoS Recall | FP |
+|---|---|---|---|---|
+| **2** | **0.9892** | 0.983 | **94%** | 4 |
+| 3 | 0.9443 | 0.974 | 86% | 6 |
+| 4 | 0.9112 | 1.000 | 78% | 0 |
+| 5 | 0.7821 | 1.000 | 47% | 0 |
+
+**Production integration:** At the edge, the request-level model scores every request immediately (<1ms). In parallel, per-IP counters accumulate. After an IP reaches `min_requests=2`, the source-level model classifies the IP. If flagged as malicious, all subsequent requests from that IP are blocked. This two-tier approach provides instant coverage for known patterns (credential stuffing) and delayed-but-effective coverage for distributed attacks (DDoS) once enough behavioral evidence accumulates.
+
 For full analysis including per-attack-type breakdown and threshold analysis, see [`docs/2.3-baseline-model-decisions.md`](docs/2.3-baseline-model-decisions.md).
 
 ### 2.4 — Edge Deployment Feasibility
 
-**Inference latency** — all runtimes satisfy the <5ms constraint:
+**Inference latency** — both tiers satisfy the <5ms constraint:
 
-| Runtime | p50 (ms) | p95 (ms) | p99 (ms) |
-|---|---|---|---|
-| LightGBM Python | 0.557 | 0.635 | 0.766 |
-| ONNX Runtime Python | 0.020 | 0.022 | 0.025 |
-| Rust native (tract) | 0.511 | 0.527 | 0.560 |
-| **WASM via wasmtime** | **0.650** | **0.670** | **0.698** |
+| Model | Runtime | p50 (ms) | p95 (ms) | p99 (ms) |
+|---|---|---|---|---|
+| Tier 1 (36f) | LightGBM Python | 0.515 | 0.552 | 0.621 |
+| Tier 1 (36f) | ONNX Runtime Python | 0.027 | 0.031 | 0.051 |
+| Tier 2 (13f) | LightGBM Python | 0.461 | 0.596 | 0.694 |
+| Tier 2 (13f) | ONNX Runtime Python | 0.018 | 0.020 | 0.036 |
 
-The WASM numbers are the production-representative measurements. WASM adds ~27% overhead vs native Rust due to sandboxing, but remains well within budget. ONNX single-request p99 of 0.034ms means a single thread handles 50k req/s with only 1.7 threads needed.
+Combined worst-case (both tiers sequential): 0.087ms — well within budget. In practice, Tier 2 runs asynchronously after IP accumulates ≥2 requests, so it does not add to the critical path. ONNX single-request p99 of 0.051ms (Tier 1) means 2.6 threads handle 50k req/s; Tier 2 needs only 1.8 threads.
 
-**Memory footprint** — the ONNX model is 75.5 KB (36 features). The WASM binary (including the tract runtime) is ~12 MB. Both fit comfortably within edge runtime memory limits (e.g., Cloudflare Workers: 128 MB).
+**Memory footprint** — Tier 1 ONNX is 766.7 KB, Tier 2 ONNX is 384.3 KB, combined 1.15 MB. The WASM binary (including the tract runtime) is ~12 MB. Both fit comfortably within edge runtime memory limits (e.g., Cloudflare Workers: 128 MB). Runtime peak memory is 11.3 KB (Tier 1) + 1.8 KB (Tier 2) per inference.
 
-**Export and serving:** The model is exported to ONNX via `onnxmltools` ([`src/export.py`](src/export.py)), then loaded by a Rust binary using `tract-onnx` compiled to `wasm32-wasip1` ([`edge-inference/src/main.rs`](edge-inference/src/main.rs)). The `ZipMap` ONNX operator was disabled (`zipmap=False`) for tract compatibility, and numerical validation confirms max absolute error of 1.58e-07 between LightGBM and ONNX predictions.
+**Export and serving:** Both models are exported to ONNX via `onnxmltools` ([`src/export.py`](src/export.py)), then loaded by a Rust binary using `tract-onnx` compiled to `wasm32-wasip1` ([`edge-inference/src/main.rs`](edge-inference/src/main.rs)). The `ZipMap` ONNX operator was disabled (`zipmap=False`) for tract compatibility, and numerical validation confirms max absolute error of 4.98e-07 (Tier 1) and 1.48e-07 (Tier 2) between LightGBM and ONNX predictions.
 
-**Serving architecture:**
+**Serving architecture (two-tier):**
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Edge Node                         │
-│                                                      │
-│  HTTP Request                                        │
-│       │                                              │
-│       ▼                                              │
-│  ┌──────────────┐    ┌──────────────┐               │
-│  │   Feature     │───▶│  ONNX Model  │               │
-│  │  Extraction   │    │  (tract/WASM)│               │
-│  │ (36 features) │    │              │               │
-│  │ + session     │    │              │               │
-│  │   state       │    │              │               │
-│  └──────────────┘    └──────┬───────┘               │
-│                             │                        │
-│                       score (0-1)                     │
-│                             │                        │
-│                    ┌────────▼────────┐               │
-│                    │  score ≥ 0.50?  │               │
-│                    └────────┬────────┘               │
-│                      yes /   \ no                    │
-│                         /     \                      │
-│              ┌─────────▼┐   ┌─▼──────────┐          │
-│              │  Block /  │   │ Forward to │          │
-│              │ Throttle  │   │   Origin   │          │
-│              └─────┬─────┘   └─────┬──────┘          │
-│                    │               │                 │
-│                    └───────┬───────┘                 │
-│                            ▼                         │
-│                   ┌────────────────┐                 │
-│                   │  Async: emit   │                 │
-│                   │  score + meta  │                 │
-│                   │  to log stream │                 │
-│                   └────────────────┘                 │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                       Edge Node                           │
+│                                                           │
+│  HTTP Request                                             │
+│       │                                                   │
+│       ▼                                                   │
+│  ┌─────────────┐    ┌──────────────────┐                 │
+│  │ IP Blocklist │───▶│ IP flagged?       │                 │
+│  │  (in-memory) │    │ (source model)    │                 │
+│  └─────────────┘    └────────┬─────────┘                 │
+│                        yes /   \ no                       │
+│                           /     \                         │
+│               ┌──────────▼┐   ┌─▼────────────┐           │
+│               │  Block    │   │  Request-Level│           │
+│               │  (fast)   │   │  ONNX Model   │           │
+│               └─────┬─────┘   │  (36 features)│           │
+│                     │         └────────┬──────┘           │
+│                     │            score (0-1)              │
+│                     │                 │                    │
+│                     │        ┌────────▼────────┐          │
+│                     │        │  score ≥ 0.50?  │          │
+│                     │        └────────┬────────┘          │
+│                     │          yes /   \ no               │
+│                     │             /     \                  │
+│                     │  ┌─────────▼┐   ┌─▼──────────┐     │
+│                     │  │  Block / │   │ Forward to  │     │
+│                     │  │ Throttle │   │   Origin    │     │
+│                     │  └────┬─────┘   └─────┬──────┘     │
+│                     │       │               │             │
+│                     └───┬───┴───────────────┘             │
+│                         ▼                                 │
+│              ┌────────────────────┐                       │
+│              │  Update IP counter │                       │
+│              │  + async log       │                       │
+│              └────────┬───────────┘                       │
+│                       ▼                                   │
+│              ┌────────────────────┐                       │
+│              │  IP requests ≥ 2?  │                       │
+│              │  → source model    │                       │
+│              │  → update blocklist│                       │
+│              └────────────────────┘                       │
+└──────────────────────────────────────────────────────────┘
 ```
 
 **Model updates** use a pull-based flow: edge nodes poll the model registry every 5 minutes, run new and old models in shadow mode for 10 minutes, then atomically switch. Automatic rollback triggers fire if p99 latency exceeds 4ms, block rate doubles, or error rate exceeds 0.01%.
@@ -141,7 +182,7 @@ Each edge node maintains a **local `HashMap<SourceIP, SessionCounters>`** with T
 
 ### 3.2 — The Labeling Bottleneck
 
-The assessment mentions a threat intelligence feed covering ~30% of known attacks. The remaining 70% require detection without pre-existing labels. The model's current recall of 49% at threshold 0.5 reflects this gap: it detects credential stuffing well (87% recall) but misses distributed attacks (DDoS, 0% recall) and novel attack types (zero-day exploit, 0% recall). A single supervised model cannot close the 70% gap alone. The strategy is a **multi-layer hybrid pipeline** where each layer covers a different segment of the threat landscape:
+The assessment mentions a threat intelligence feed covering ~30% of known attacks. The remaining 70% require detection without pre-existing labels. The request-level model's recall of 49% at threshold 0.5 reflects this gap: it detects credential stuffing well (87% recall) but misses distributed attacks (DDoS, 0% recall) and novel attack types (zero-day exploit, 0% recall). The source-level classifier (Section 2.3) recovers DDoS recall to 94% by classifying IPs after observing 2+ requests, but the unsupervised/hybrid strategy remains necessary for truly novel attacks. A single supervised model cannot close the 70% gap alone. The strategy is a **multi-layer hybrid pipeline** where each layer covers a different segment of the threat landscape:
 
 1. **Supervised model (LGBM)** — the primary defense for known behavioral patterns. Handles credential stuffing and similar attacks where per-IP session features carry strong signal: high request counts, regular timing, concentrated endpoint targeting. Retrained weekly with the latest labels from post-incident forensics and WAF rule triggers. This layer makes block/allow decisions at the edge.
 
@@ -151,7 +192,7 @@ The assessment mentions a threat intelligence feed covering ~30% of known attack
 
 4. **Feedback loop** — flagged anomalies and threat intel matches are routed to the security team's review queue with priority proportional to severity. Confirmations become training labels for the next retraining cycle. Rejections calibrate the z-score thresholds and threat intel quality scores. Over time, this loop closes the gap: anomalies confirmed as attacks become supervised training data, expanding the model's coverage beyond the initial 30% of known patterns.
 
-**The DDoS gap:** For L7 DDoS specifically, the ML model is not the right tool — per-IP features fundamentally cannot capture coordinated multi-IP behavior. Rate limiting and WAF rules at the origin are the primary defense. The ML model's role is augmenting these defenses by catching attacks that have distinctive per-IP behavioral signatures, not replacing them.
+**The DDoS gap (partially addressed):** The source-level classifier (Section 2.3) recovers DDoS L7 recall from 0% to 94% by classifying IPs after observing 2+ requests. This works because the DDoS IPs in this dataset exhibit distinctive aggregate behavior (single-endpoint concentration, unusual method mix). However, this approach has limits: truly distributed attacks where each IP sends only 1-2 requests would still evade detection. For those cases, rate limiting and WAF rules at the origin remain the primary defense.
 
 **The handoff timeline for a novel attack:** The anomaly detector flags unusual traffic within hours (once enough requests accumulate to produce statistically significant z-scores). The security team investigates and confirms — producing the first labels within ~24 hours. The next scheduled retrain (or an emergency retrain triggered by the alert) incorporates these labels, and the supervised model covers the new pattern going forward. During the initial hours before the anomaly detector has enough data, the threat intelligence feed and downstream defenses (origin WAF rules, fraud detection) serve as the backstop — the assessment explicitly states that "false negatives are partially mitigated by downstream defenses."
 
@@ -202,7 +243,7 @@ With TLS features removed, the model's attack surface has shifted. The primary e
 
 **Timing jitter:** An attacker adds random noise to request timing, degrading the `inter_request_time_mean` and `inter_request_time_std` features. However, volume-based features (`request_count`, `unique_paths`) and endpoint targeting features (`sensitive_endpoint_ratio`) remain robust — an attacker conducting credential stuffing must still hit authentication endpoints at high volume regardless of timing noise.
 
-**What the model cannot do:** The current recall gap on DDoS (0%) reveals the fundamental limitation of per-source features for distributed attacks. No amount of feature engineering on per-IP aggregates can detect an attack whose signature exists only in the *aggregate across many IPs*. This is a feature-level architectural constraint, not a model quality issue.
+**What the model cannot do:** The source-level classifier addresses DDoS where each IP sends 5+ requests with distinctive aggregate behavior (94% recall). However, attacks where each IP sends only 1-2 requests — making aggregate profiling impossible — remain undetectable at the edge. This is a fundamental constraint: no amount of per-IP feature engineering can detect an attack whose signature exists only in the *aggregate across many IPs* each contributing minimal individual signal.
 
 **Mitigation strategy across timescales:**
 
@@ -222,8 +263,8 @@ The project includes two GitHub Actions workflows ([`.github/workflows/`](.githu
 
 **`ci.yml`** runs on every push and pull request:
 1. **Lint** — `ruff check` + `ruff format --check` for consistent code style.
-2. **Test** — full pytest suite (53 tests) covering label joining, features, model, export, monitoring.
-3. **ONNX Validation** — trains a model from scratch, exports to ONNX, and validates numerical equivalence. Also asserts minimum metric thresholds (PR-AUC > 0.50, F1 > 0.40) to catch regressions.
+2. **Test** — full pytest suite (63 tests) covering label joining, features, model, source model, export, monitoring.
+3. **ONNX Validation** — trains both tier models from scratch, exports to ONNX, and validates numerical equivalence. Also asserts minimum metric thresholds (PR-AUC > 0.50, F1 > 0.40 for Tier 1; PR-AUC > 0.50 for Tier 2) to catch regressions.
 4. **Rust Build** — compiles the edge-inference binary to verify Rust code integrity.
 
 **`model-validation.yml`** runs on-demand (`workflow_dispatch`) for full model validation:

@@ -40,12 +40,14 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Run pipeline and validate ONNX export
+      - name: Run pipeline and validate ONNX export (two-tier)
         run: |
           python -c "
           from src.pipeline import build_training_dataset
           from src.model import get_feature_columns, temporal_train_test_split, train_model, evaluate_model
+          from src.source_model import compute_source_features, train_source_model, evaluate_source_model, SOURCE_FEATURE_COLS
           from src.export import export_to_onnx, validate_onnx_export
+          import pandas as pd
 
           df = build_training_dataset('data/http_requests.csv', 'data/request_headers.csv', 'data/incident_labels.csv')
           train, test = temporal_train_test_split(df, '2025-01-10')
@@ -53,17 +55,37 @@ jobs:
           X_train, y_train = train[features], train['is_malicious'].astype(int)
           X_test, y_test = test[features], test['is_malicious'].astype(int)
 
+          # Tier 1: Request-level model
           model = train_model('lgbm', {'n_estimators': 100, 'verbose': -1}, X_train, y_train, train['sample_weight'])
           metrics = evaluate_model(model, X_test, y_test)
-
-          assert metrics['pr_auc'] > 0.50, f'PR-AUC {metrics[\"pr_auc\"]:.4f} below threshold 0.50'
-          assert metrics['f1'] > 0.40, f'F1 {metrics[\"f1\"]:.4f} below threshold 0.40'
-          print(f'Model metrics — PR-AUC: {metrics[\"pr_auc\"]:.4f}, F1: {metrics[\"f1\"]:.4f}, Precision: {metrics[\"precision\"]:.4f}, Recall: {metrics[\"recall\"]:.4f}')
+          assert metrics['pr_auc'] > 0.50, f'Tier1 PR-AUC {metrics[\"pr_auc\"]:.4f} below threshold 0.50'
+          assert metrics['f1'] > 0.40, f'Tier1 F1 {metrics[\"f1\"]:.4f} below threshold 0.40'
+          print(f'Tier 1 metrics — PR-AUC: {metrics[\"pr_auc\"]:.4f}, F1: {metrics[\"f1\"]:.4f}')
 
           export_to_onnx(model, features, 'model_ci.onnx')
           result = validate_onnx_export(model, 'model_ci.onnx', X_test)
-          assert result['match'], f'ONNX mismatch: max_abs_error={result[\"max_abs_error\"]}'
-          print(f'ONNX validation — max_abs_error: {result[\"max_abs_error\"]:.2e}, match: {result[\"match\"]}')
+          assert result['match'], f'Tier1 ONNX mismatch: max_abs_error={result[\"max_abs_error\"]}'
+          print(f'Tier 1 ONNX — max_abs_error: {result[\"max_abs_error\"]:.2e}, match: {result[\"match\"]}')
+
+          # Tier 2: Source-level model
+          cutoff = pd.Timestamp('2025-01-10').date()
+          agg = compute_source_features(df, min_requests=2)
+          train_agg = agg[agg['day'] < cutoff]
+          test_agg = agg[agg['day'] >= cutoff]
+          X_s_train = train_agg[SOURCE_FEATURE_COLS].astype(float)
+          y_s_train = train_agg['is_malicious'].astype(int)
+          X_s_test = test_agg[SOURCE_FEATURE_COLS].astype(float)
+          y_s_test = test_agg['is_malicious'].astype(int)
+
+          src_model = train_source_model(X_s_train, y_s_train)
+          src_metrics = evaluate_source_model(src_model, X_s_test, y_s_test)
+          assert src_metrics['pr_auc'] > 0.50, f'Tier2 PR-AUC {src_metrics[\"pr_auc\"]:.4f} below threshold 0.50'
+          print(f'Tier 2 metrics — PR-AUC: {src_metrics[\"pr_auc\"]:.4f}, Recall: {src_metrics[\"recall\"]:.4f}')
+
+          export_to_onnx(src_model, SOURCE_FEATURE_COLS, 'source_model_ci.onnx')
+          src_result = validate_onnx_export(src_model, 'source_model_ci.onnx', X_s_test)
+          assert src_result['match'], f'Tier2 ONNX mismatch: max_abs_error={src_result[\"max_abs_error\"]}'
+          print(f'Tier 2 ONNX — max_abs_error: {src_result[\"max_abs_error\"]:.2e}, match: {src_result[\"match\"]}')
           "
 
   rust-build:

@@ -1,0 +1,32 @@
+{
+  "feature_names": [
+    "total_requests",
+    "unique_paths",
+    "unique_methods",
+    "path_concentration",
+    "method_per_path",
+    "sensitive_ratio",
+    "ua_entropy_mean",
+    "ua_is_bot",
+    "ua_is_browser",
+    "header_count_mean",
+    "has_cookie_ratio",
+    "has_accept_language_ratio",
+    "path_entropy_mean"
+  ],
+  "values": [
+    2.0,
+    2.0,
+    1.0,
+    0.5,
+    0.5,
+    0.0,
+    5.08957869483142,
+    0.0,
+    1.0,
+    2.5,
+    0.0,
+    0.5,
+    3.724131085146623
+  ]
+}
