@@ -23,11 +23,7 @@ def test_build_training_dataset_runs_on_real_data():
         "data/request_headers.csv",
         "data/incident_labels.csv",
     )
-    session_cols = [
-        c
-        for c in result.columns
-        if c.startswith("ip_")
-    ]
+    session_cols = [c for c in result.columns if c.startswith("ip_")]
     assert len(session_cols) == 39
     assert "method_freq" in result.columns
     assert "is_malicious" in result.columns

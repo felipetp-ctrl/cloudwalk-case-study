@@ -187,9 +187,5 @@ def test_session_features_causal_accumulation():
 def test_session_feature_count():
     df = _make_session_data()
     result = compute_session_features(df)
-    session_cols = [
-        c
-        for c in result.columns
-        if c.startswith("ip_")
-    ]
+    session_cols = [c for c in result.columns if c.startswith("ip_")]
     assert len(session_cols) == 39
