@@ -38,16 +38,16 @@ For justification of each feature choice, see [`docs/2.2-feature-engineering-dec
 
 ### 2.3 — Baseline Model
 
-Four models were trained in a simple → complex progression ([`src/model.py`](src/model.py)), evaluated with temporal split (train days 6-9, test days 10-12) and 36 features. Precision, Recall, F1, and FPR are reported at threshold 0.5; PR-AUC and ROC-AUC are threshold-independent:
+Four models were trained in a simple → complex progression ([`src/model.py`](src/model.py)), evaluated with temporal split (train days 6-9, test days 10-12) and 36 features. Precision, Recall, F1, and FPR are reported at the optimal F1 threshold; PR-AUC and ROC-AUC are threshold-independent:
 
 | Model | CV PR-AUC | Test PR-AUC | ROC-AUC | Precision | Recall | F1 | FPR |
 |---|---|---|---|---|---|---|---|
-| Logistic Regression | 0.5432 | 0.0123 | 0.0689 | 0.2857 | 0.0082 | 0.0159 | 0.000239 |
-| Random Forest | 0.7771 | 0.8086 | 0.9850 | 0.0000 | 0.0000 | 0.0000 | 0.000000 |
-| XGBoost | 0.8894 | 0.6206 | 0.8713 | 1.0000 | 0.5224 | 0.6863 | 0.000000 |
-| **LightGBM** | **0.9441** | **0.8138** | **0.9871** | **1.0000** | **0.4898** | **0.6575** | **0.0000** |
+| Logistic Regression | 0.5432 | 0.0123 | 0.0689 | 0.1091 | 0.0245 | 0.0400 | 0.002345 |
+| Random Forest | 0.7771 | 0.8086 | 0.9850 | 0.7044 | 0.7878 | 0.7437 | 0.003876 |
+| XGBoost | 0.8894 | 0.6206 | 0.8713 | 0.9797 | 0.5918 | 0.7379 | 0.000144 |
+| **LightGBM** | **0.9441** | **0.8138** | **0.9871** | **0.9658** | **0.5755** | **0.7212** | **0.000239** |
 
-**LightGBM was selected** based on (PR-AUC, F1): it achieves the highest test PR-AUC (0.8138) and the second-highest F1 (0.6575), behind only XGBoost's 0.6863. LGBM was preferred over XGBoost because PR-AUC — the primary metric for imbalanced classification — is substantially higher (0.8138 vs 0.6206), indicating better ranking quality across all thresholds.
+**LightGBM was selected** based on PR-AUC: it achieves the highest test PR-AUC (0.8138) — the primary metric for imbalanced classification — indicating substantially better ranking quality across all thresholds than XGBoost (0.6206) or Random Forest (0.8086). At the optimal F1 threshold, LGBM maintains high precision (0.97) with moderate recall (0.58).
 
 **Per-attack recall at threshold 0.5:**
 
@@ -78,10 +78,10 @@ A **source-level classifier** ([`src/source_model.py`](src/source_model.py)) agg
 
 | Approach | PR-AUC | Precision | Recall | F1 | DDoS Recall | CS Recall |
 |---|---|---|---|---|---|---|
-| Request-level only (Tier 1) | 0.8138 | 1.000 | 0.490 | 0.658 | 0% | 87% |
+| Request-level only (Tier 1) | 0.8138 | 0.966 | 0.576 | 0.721 | 0% | 87% |
 | **Two-tier ensemble** (min_requests=2) | **0.9892** | **0.983** | **0.951** | **0.967** | **94%** | **100%** |
 
-The source-level model recovers DDoS detection from 0% to 94% recall by operating at the right granularity — classifying IPs by aggregate behavior rather than individual requests. The precision drop (1.0 → 0.983) reflects 4 benign requests misclassified across ~21,000 test requests (FPR = 0.02%) — an acceptable trade-off given the $2.50 FP cost against the DDoS recall gain. The remaining 6% missed DDoS comes from IPs with only 1 request in their active day, which cannot be profiled at the source level and fall through to downstream defenses.
+The source-level model recovers DDoS detection from 0% to 94% recall by operating at the right granularity — classifying IPs by aggregate behavior rather than individual requests. The ensemble's 4 false positive requests across ~21,000 test requests (FPR = 0.02%) is an acceptable trade-off given the $2.50 FP cost against the DDoS recall gain. The remaining 6% missed DDoS comes from IPs with only 1 request in their active day, which cannot be profiled at the source level and fall through to downstream defenses.
 
 **`min_requests` sensitivity analysis:**
 
