@@ -1,15 +1,8 @@
 # Technical Writeup
 
-## A Note on the Synthetic Dataset
+## Note on TLS Feature Removal
 
-Before presenting results, it is important to flag a critical characteristic of the synthetic data that frames everything below: **each TLS fingerprint in the dataset is 100% malicious or 100% benign**. No fingerprint is shared between attack and legitimate traffic. This means TLS-granularity session features (e.g., `tls_30m_request_count`) act as perfect label proxies — the model identifies attack *tools* by their fingerprint, not attack *behavior* by its patterns.
-
-The PR-AUC of 1.0 reported in Section 2.3 is technically correct (no data leakage), but it reflects this dataset property, not genuine behavioral detection. In production, where attackers use TLS fingerprint spoofing (JA3 randomization via tools like curl-impersonate), the model's performance would degrade to somewhere between:
-
-- **Floor (~0.71 PR-AUC):** Attackers fully randomize TLS fingerprints — only IP + per-request features remain.
-- **Ceiling (1.0 PR-AUC):** Attackers use default tool fingerprints — TLS identity provides trivial separation.
-
-This caveat applies to all results below. The pipeline, feature engineering, and deployment architecture are designed to be robust regardless — behavioral features provide the fallback signal when TLS identity becomes unreliable.
+TLS-granularity session features (e.g., `tls_30m_request_count`) were removed from the model because they create a **circular dependency with the labels**: incident labels are partially assigned by TLS fingerprint matching, which means TLS-based session features act as near-perfect label proxies. The model would learn to identify attack *tools* by their fingerprint rather than attack *behavior* by its patterns. After removing these features, the model uses 36 features (15 per-request + 21 IP-level session features) and reflects genuine behavioral detection capability.
 
 ---
 
@@ -35,7 +28,7 @@ The feature pipeline ([`src/features.py`](src/features.py)) extracts two categor
 
 **Per-request features (15):** Computed from the HTTP request alone — path characteristics (`path_depth`, `path_length`, `path_entropy`, `path_has_params`), user-agent signals (`ua_length`, `ua_entropy`, `ua_is_browser`, `ua_is_bot_library`), header presence flags (`header_count`, `has_accept_language`, `has_referer`, `has_cookie`, `has_authorization`), temporal (`hour_of_day`), and endpoint sensitivity (`is_sensitive_endpoint`).
 
-**Session features (42 active):** Aggregated at two granularities (per source IP and per TLS fingerprint) across three time windows (1min, 5min, 30min). Seven base metrics per variant: `request_count`, `unique_paths`, `path_entropy`, `method_diversity`, `sensitive_endpoint_ratio`, `inter_request_time_mean`, `inter_request_time_std`. Total: 7 × 3 × 2 = 42.
+**Session features (21):** Aggregated at **IP granularity only** across three time windows (1min, 5min, 30min). Seven base metrics per window: `request_count`, `unique_paths`, `path_entropy`, `method_diversity`, `sensitive_endpoint_ratio`, `inter_request_time_mean`, `inter_request_time_std`. Total: 7 × 3 × 1 = 21. TLS-granularity session features (an additional 21) were removed because they create a circular dependency with labels — since labels are partially assigned by TLS fingerprint matching, TLS-based session aggregates become near-perfect proxies for the label itself. The model now captures behavioral patterns (request volume, timing, endpoint targeting) rather than tool identity.
 
 **Causal windowing:** Each request's session features aggregate only *prior* requests within the same time window — the current request is never included in its own aggregates. This matches the real-time edge computation model and prevents data leakage. Implemented via `cumcount()`, `expanding().mean().shift(1)`, and custom causal functions for nunique/entropy.
 
@@ -45,22 +38,28 @@ For justification of each feature choice, see [`docs/2.2-feature-engineering-dec
 
 ### 2.3 — Baseline Model
 
-Four models were trained in a simple → complex progression ([`src/model.py`](src/model.py)):
+Four models were trained in a simple → complex progression ([`src/model.py`](src/model.py)), evaluated with temporal split (train days 6-9, test days 10-12) and 36 features:
 
-| Model | PR-AUC | Precision | Recall | F1 | FPR |
-|---|---|---|---|---|---|
-| Logistic Regression | 0.9589 | 1.0000 | 0.9265 | 0.9619 | 0.0000 |
-| Random Forest | 1.0000 | 1.0000 | 0.5592 | 0.7173 | 0.0000 |
-| XGBoost | 1.0000 | 1.0000 | 0.9837 | 0.9918 | 0.0000 |
-| **LightGBM** | **1.0000** | **1.0000** | **1.0000** | **1.0000** | **0.0000** |
+| Model | CV PR-AUC | Test PR-AUC | ROC-AUC | Precision | Recall | F1 | FPR |
+|---|---|---|---|---|---|---|---|
+| Logistic Regression | 0.5432 | 0.0123 | 0.0689 | 0.2857 | 0.0082 | 0.0159 | 0.000239 |
+| Random Forest | 0.7771 | 0.8086 | 0.9850 | 0.0000 | 0.0000 | 0.0000 | 0.000000 |
+| XGBoost | 0.8894 | 0.6206 | 0.8713 | 1.0000 | 0.5224 | 0.6863 | 0.000000 |
+| **LightGBM** | **0.9441** | **0.8138** | **0.9871** | **1.0000** | **0.4898** | **0.6575** | **0.0000** |
 
-**LightGBM was selected** based on (PR-AUC, F1) tiebreaker: all tree models achieve PR-AUC 1.0, but only LGBM reaches F1 1.0 with perfect recall across all three test attack types (zero_day_exploit, credential_stuffing, ddos_l7).
+**LightGBM was selected** based on (PR-AUC, F1): it achieves the highest test PR-AUC (0.8138) and the second-highest F1 (0.6575), behind only XGBoost's 0.6863. LGBM was preferred over XGBoost because PR-AUC — the primary metric for imbalanced classification — is substantially higher (0.8138 vs 0.6206), indicating better ranking quality across all thresholds.
 
-**Class imbalance** was handled via `scale_pos_weight` (proportional to the ~83:1 imbalance ratio) combined with confidence-based sample weights from `incident_labels.confidence` (`high=1.0`, `medium=0.6`, `low=0.3`). SMOTE was rejected because the 592 malicious samples span 5 heterogeneous attack types — interpolating between DDoS and credential stuffing samples produces synthetic examples that represent no real attack pattern.
+**Per-attack recall at threshold 0.5:**
 
-**Temporal train/test split:** Train on days 6-9, test on days 10-12 (cutoff at January 10). This ensures no future data leaks into training. Notably, `zero_day_exploit` appears only in the test set — the model has never seen this attack type during training but detects it via its unique TLS fingerprint. Hyperparameters were tuned with Optuna using expanding-window temporal cross-validation (3 folds).
+- **credential_stuffing: 87% recall** — the model genuinely learns behavioral patterns (many login attempts from the same IP, high sensitive endpoint ratio, regular timing). This is real behavioral detection.
+- **zero_day_exploit: 0% recall** — only 6 samples, never seen in training, and without TLS fingerprint as a shortcut, there is no distinctive IP-level behavior to distinguish these from benign traffic.
+- **ddos_l7: 0% recall** — distributed attack where each participating IP sends only a few requests. Per-IP session features cannot capture the coordinated multi-IP nature of the attack. Individual requests look normal; it is the aggregate across many IPs that constitutes the attack.
 
-**Feature pruning** from 57 to 32 features (99% cumulative importance threshold) was evaluated but rejected: PR-AUC drops from 1.0 to 0.879, with credential_stuffing recall collapsing to 0.0. The model distributes importance across many TLS-granularity features; removing any subset breaks detection.
+**Class imbalance** was handled via `scale_pos_weight=138.27` combined with confidence-based sample weights from `incident_labels.confidence` (`high=1.0`, `medium=0.6`, `low=0.3`). SMOTE was rejected because the 592 malicious samples span 5 heterogeneous attack types — interpolating between DDoS and credential stuffing samples produces synthetic examples that represent no real attack pattern. Hyperparameters were tuned with Optuna (n_estimators=589, num_leaves=66, max_depth=8, learning_rate=0.0380) using expanding-window temporal cross-validation (3 folds).
+
+**Feature pruning** from 36 to 30 features (99% cumulative importance threshold): PR-AUC drops only 0.024 (from 0.8138 to 0.7894). This is much less lossy than before TLS feature removal, because importance is now distributed across genuine behavioral features rather than concentrated in a few TLS-identity proxies. Pruning is a viable option if latency constraints require it.
+
+**Threshold analysis** shows that the default threshold of 0.5 yields perfect precision (1.0) but moderate recall (0.4898). Lowering the threshold to 0.144 (cost-optimal for $2.50 FP / $0.10 FN) recovers some recall (0.5102) while maintaining precision at 1.0. Even at an aggressive threshold of 0.01 (high FN cost scenario, $5.00 per missed attack), recall reaches only 0.5551 with precision at 0.9714. The fundamental ceiling is the model's inability to detect distributed attacks (DDoS) and novel attacks (zero-day) using per-IP features alone — no threshold adjustment can recover signal that is not in the features.
 
 For full analysis including per-attack-type breakdown and threshold analysis, see [`docs/2.3-baseline-model-decisions.md`](docs/2.3-baseline-model-decisions.md).
 
@@ -75,11 +74,11 @@ For full analysis including per-attack-type breakdown and threshold analysis, se
 | Rust native (tract) | 0.511 | 0.527 | 0.560 |
 | **WASM via wasmtime** | **0.650** | **0.670** | **0.698** |
 
-The WASM numbers are the production-representative measurements. WASM adds ~27% overhead vs native Rust due to sandboxing, but remains well within budget.
+The WASM numbers are the production-representative measurements. WASM adds ~27% overhead vs native Rust due to sandboxing, but remains well within budget. ONNX single-request p99 of 0.034ms means a single thread handles 50k req/s with only 1.7 threads needed.
 
-**Memory footprint** — the ONNX model is 38 KB. The WASM binary (including the tract runtime) is ~12 MB. Both fit comfortably within edge runtime memory limits (e.g., Cloudflare Workers: 128 MB).
+**Memory footprint** — the ONNX model is 75.5 KB (36 features). The WASM binary (including the tract runtime) is ~12 MB. Both fit comfortably within edge runtime memory limits (e.g., Cloudflare Workers: 128 MB).
 
-**Export and serving:** The model is exported to ONNX via `onnxmltools` ([`src/export.py`](src/export.py)), then loaded by a Rust binary using `tract-onnx` compiled to `wasm32-wasip1` ([`edge-inference/src/main.rs`](edge-inference/src/main.rs)). The `ZipMap` ONNX operator was disabled (`zipmap=False`) for tract compatibility, and numerical validation confirms max absolute error of 9.08e-08 between LightGBM and ONNX predictions.
+**Export and serving:** The model is exported to ONNX via `onnxmltools` ([`src/export.py`](src/export.py)), then loaded by a Rust binary using `tract-onnx` compiled to `wasm32-wasip1` ([`edge-inference/src/main.rs`](edge-inference/src/main.rs)). The `ZipMap` ONNX operator was disabled (`zipmap=False`) for tract compatibility, and numerical validation confirms max absolute error of 1.58e-07 between LightGBM and ONNX predictions.
 
 **Serving architecture:**
 
@@ -93,7 +92,7 @@ The WASM numbers are the production-representative measurements. WASM adds ~27% 
 │  ┌──────────────┐    ┌──────────────┐               │
 │  │   Feature     │───▶│  ONNX Model  │               │
 │  │  Extraction   │    │  (tract/WASM)│               │
-│  │ (57 features) │    │              │               │
+│  │ (36 features) │    │              │               │
 │  │ + session     │    │              │               │
 │  │   state       │    │              │               │
 │  └──────────────┘    └──────┬───────┘               │
@@ -132,25 +131,29 @@ For full details including canary deployment, rollback triggers, and monitoring 
 
 ### 3.1 — Stateless Edge, Stateful Signals
 
-The 42 session features require per-source sliding-window state, but edge nodes are stateless and requests from the same source may hit different nodes. The proposed architecture uses **consistent hashing on `source_ip` at the load balancer** to route all requests from the same IP to the same edge node. This is not a novel technique — CDN providers like Cloudflare and Fastly already use consistent hashing for cache affinity, and the same mechanism provides session affinity for free.
+The 21 session features require per-IP sliding-window state, but edge nodes are stateless and requests from the same source may hit different nodes. The proposed architecture uses **consistent hashing on `source_ip` at the load balancer** to route all requests from the same IP to the same edge node. This is not a novel technique — CDN providers like Cloudflare and Fastly already use consistent hashing for cache affinity, and the same mechanism provides session affinity for free.
 
-Each edge node maintains a **local `HashMap<SourceKey, SessionCounters>`** with TTL-based eviction (30 minutes, matching the longest feature window). Each entry stores 42 counters (7 metrics × 3 windows × 2 granularities), consuming ~1-2 KB per active source. With 10,000 concurrently active sources per node, total state is ~10-20 MB — negligible against a typical edge runtime's memory budget. Session lookups are O(1) hash table operations with zero network latency, keeping the total budget at ~1ms feature extraction + ~1ms inference = 2ms, with 3ms headroom.
+Each edge node maintains a **local `HashMap<SourceIP, SessionCounters>`** with TTL-based eviction (30 minutes, matching the longest feature window). Each entry stores 21 counters (7 metrics × 3 windows × 1 granularity), consuming ~0.5-1 KB per active source. With 10,000 concurrently active sources per node, total state is ~5-10 MB — negligible against a typical edge runtime's memory budget. Session lookups are O(1) hash table operations with zero network latency, keeping the total budget at ~1ms feature extraction + ~1ms inference = 2ms, with 3ms headroom.
 
-**Graceful degradation when state is unavailable:** If an edge node restarts or hits memory pressure, the session state is lost. The model falls back to the 15 per-request features only, with PR-AUC dropping to ~0.71 — degraded but still functional. State repopulates organically as new requests arrive; full session capacity is restored within 30 minutes (the longest window). This is an acceptable tradeoff: brief degradation on a single node does not compromise the system globally, and per-request features still catch the most obvious attacks (bot user-agents, sensitive endpoint targeting).
+**Graceful degradation when state is unavailable:** If an edge node restarts or hits memory pressure, the session state is lost. The model falls back to the 15 per-request features only — degraded but still functional. State repopulates organically as new requests arrive; full session capacity is restored within 30 minutes (the longest window). This is an acceptable tradeoff: brief degradation on a single node does not compromise the system globally, and per-request features still catch the most obvious attacks (bot user-agents, sensitive endpoint targeting).
 
-**Cross-node gap:** IP rotation by attackers causes requests to land on different nodes, breaking session continuity. Two mitigations: (1) TLS fingerprints are more stable than IPs — if the load balancer also hashes on TLS fingerprint, session state persists even as IPs rotate; (2) the most damaging attack types (DDoS, credential stuffing) require high request volume from fixed IPs within short windows, which the 1-minute and 5-minute features capture before the attacker rotates.
+**Cross-node gap:** IP rotation by attackers causes requests to land on different nodes, breaking session continuity. With TLS-granularity features removed, the primary mitigation is the time window structure itself: the most damaging attack types that the model can detect (credential stuffing) require high request volume from fixed IPs within short windows, which the 1-minute and 5-minute features capture before the attacker rotates. For distributed attacks like L7 DDoS — where IP rotation is inherent to the attack pattern — the model's per-IP features are fundamentally insufficient, and defense relies on origin-side rate limiting and WAF rules (see Section 3.2).
 
 ### 3.2 — The Labeling Bottleneck
 
-The core problem is a 1-3 day gap between a novel attack starting and having labeled data for it. The supervised model, by definition, cannot detect what it has never seen. The strategy is a **three-layer hybrid pipeline** where each layer covers a different speed/accuracy tradeoff:
+The assessment mentions a threat intelligence feed covering ~30% of known attacks. The remaining 70% require detection without pre-existing labels. The model's current recall of 49% at threshold 0.5 reflects this gap: it detects credential stuffing well (87% recall) but misses distributed attacks (DDoS, 0% recall) and novel attack types (zero-day exploit, 0% recall). A single supervised model cannot close the 70% gap alone. The strategy is a **multi-layer hybrid pipeline** where each layer covers a different segment of the threat landscape:
 
-1. **Supervised model (LGBM)** — the primary defense. Handles all known attack patterns with high precision. Retrained weekly with the latest labels from post-incident forensics and WAF rule triggers. This is the only layer that makes block/allow decisions.
+1. **Supervised model (LGBM)** — the primary defense for known behavioral patterns. Handles credential stuffing and similar attacks where per-IP session features carry strong signal: high request counts, regular timing, concentrated endpoint targeting. Retrained weekly with the latest labels from post-incident forensics and WAF rule triggers. This layer makes block/allow decisions at the edge.
 
-2. **Statistical anomaly detector** — runs in parallel, flag-only (never blocks). Computes z-scores on session features (`request_count`, `inter_request_time_std`, `unique_paths`, `sensitive_endpoint_ratio`) against a rolling 24-hour benign baseline. Sources exceeding z > 3σ on multiple features simultaneously are flagged as anomaly candidates. No labels required — this layer detects distributional outliers regardless of whether the pattern has been seen before.
+2. **Threat intelligence feed** — provides high-precision signals for ~30% of attacks using known-bad IPs, CIDR ranges, and attack signatures. Operates as a complementary layer: requests matching threat intel are blocked regardless of model score. This covers attacks the model might miss (especially distributed attacks coordinated from known botnets) without introducing false positives.
 
-3. **Feedback loop** — flagged anomalies are routed to the security team's review queue with priority proportional to the anomaly severity. The team confirms or rejects each candidate. Confirmations become training labels for the next retraining cycle. Rejections calibrate the z-score thresholds to reduce future false flags.
+3. **Statistical anomaly detector** — runs in parallel, flag-only (never blocks). Computes z-scores on session features (`request_count`, `inter_request_time_std`, `unique_paths`, `sensitive_endpoint_ratio`) against a rolling 24-hour benign baseline. Sources exceeding z > 3σ on multiple features simultaneously are flagged as anomaly candidates. No labels required — this layer detects distributional outliers regardless of whether the pattern has been seen before.
 
-**The handoff timeline for a novel attack:** The anomaly detector flags unusual traffic within hours (once enough requests accumulate to produce statistically significant z-scores). The security team investigates and confirms — producing the first labels within ~24 hours. The next scheduled retrain (or an emergency retrain triggered by the alert) incorporates these labels, and the supervised model covers the new pattern going forward. During the initial hours before the anomaly detector has enough data, downstream defenses (origin WAF rules, fraud detection) serve as the backstop — the assessment explicitly states that "false negatives are partially mitigated by downstream defenses."
+4. **Feedback loop** — flagged anomalies and threat intel matches are routed to the security team's review queue with priority proportional to severity. Confirmations become training labels for the next retraining cycle. Rejections calibrate the z-score thresholds and threat intel quality scores. Over time, this loop closes the gap: anomalies confirmed as attacks become supervised training data, expanding the model's coverage beyond the initial 30% of known patterns.
+
+**The DDoS gap:** For L7 DDoS specifically, the ML model is not the right tool — per-IP features fundamentally cannot capture coordinated multi-IP behavior. Rate limiting and WAF rules at the origin are the primary defense. The ML model's role is augmenting these defenses by catching attacks that have distinctive per-IP behavioral signatures, not replacing them.
+
+**The handoff timeline for a novel attack:** The anomaly detector flags unusual traffic within hours (once enough requests accumulate to produce statistically significant z-scores). The security team investigates and confirms — producing the first labels within ~24 hours. The next scheduled retrain (or an emergency retrain triggered by the alert) incorporates these labels, and the supervised model covers the new pattern going forward. During the initial hours before the anomaly detector has enough data, the threat intelligence feed and downstream defenses (origin WAF rules, fraud detection) serve as the backstop — the assessment explicitly states that "false negatives are partially mitigated by downstream defenses."
 
 ### 3.3 — Threshold Economics
 
@@ -187,17 +190,27 @@ precision_min = (0.0005 × 5.00) / (0.9995 × 2.50 + 0.0005 × 5.00)
 
 The minimum precision threshold shifts from 0.002% to 0.1% — still very low, meaning the economics still heavily favor recall. The FN cost would need to exceed ~$5,000 per request before precision becomes the binding constraint.
 
+**Relevance to the current model:** Unlike the previous model with near-perfect separation, the current model has a real precision-recall tradeoff. At threshold 0.5, precision is 1.0 and recall is 0.4898 — no false positives, but half of attacks are missed. Lowering the threshold to 0.144 (cost-optimal for normal costs) only marginally improves recall to 0.5102 while maintaining perfect precision. Even at threshold 0.01 (high FN cost scenario), recall reaches 0.5551 with precision dropping slightly to 0.9714. The threshold economics confirm that aggressive threshold lowering is justified, but the recall ceiling is bounded by the model's feature limitations, not by the threshold. The missing recall (DDoS, zero-day) requires architectural solutions (threat intel, anomaly detection, WAF rules), not threshold tuning.
+
 **Practical caveat:** The $2.50 FP cost captures only direct lost revenue. Blocking a legitimate customer on a payment flow also creates support tickets, churn risk, and reputational damage — costs that are real but harder to quantify. A production system should set the precision floor higher than the pure economic optimum to account for these indirect costs.
 
 ### 3.4 — Adversarial Robustness
 
-When the attacker randomizes TLS fingerprints and adds timing jitter, the model loses its two strongest signal families. Recall drops from 92% to 41%. The response operates on three timescales:
+With TLS features removed, the model's attack surface has shifted. The primary evasion vectors are now **IP rotation** and **timing jitter**, which target the model's IP-level session features.
 
-**Immediate (hours):** Lower the blocking threshold to recover partial recall at the cost of more false positives — the threshold economics from Section 3.3 show this is almost always net-positive. Simultaneously, activate the threat intelligence feed as a supplementary signal: it covers ~30% of attacks with high precision and requires no model changes. Enable aggressive rate limiting on sensitive endpoints (`/auth`, `/login`, `/payment`, `/tokenize`) as a WAF-level fallback. Alert the security team to investigate the evasion pattern and begin labeling the new attack traffic.
+**IP rotation:** An attacker changes source IPs frequently, breaking session continuity. Each new IP starts with a clean slate — zero request count, no timing history, no path diversity signal. The model falls back to the 15 per-request features, which carry weaker signal. This is the most effective evasion strategy against the current model. The model's 0% recall on DDoS already demonstrates this limitation: DDoS inherently uses many IPs with few requests each, which is functionally equivalent to IP rotation from the model's perspective.
 
-**Short-term (days):** Retrain the model *excluding* all TLS features, forcing it to learn behavioral patterns: timing regularity (`inter_request_time_std`), endpoint diversity (`unique_paths`), request volume (`request_count`), and sensitive endpoint targeting (`sensitive_endpoint_ratio`). The IP + per-request feature floor is ~0.71 PR-AUC on the current dataset, but focused retraining with behavioral emphasis — combined with the new labeled data from the security team's investigation — should improve this. Additionally, introduce spoofing-resistant features that are harder to fake than JA3: HTTP/2 frame ordering, header canonicalization order, and TCP/IP stack fingerprinting (window size, TTL, TCP options).
+**Timing jitter:** An attacker adds random noise to request timing, degrading the `inter_request_time_mean` and `inter_request_time_std` features. However, volume-based features (`request_count`, `unique_paths`) and endpoint targeting features (`sensitive_endpoint_ratio`) remain robust — an attacker conducting credential stuffing must still hit authentication endpoints at high volume regardless of timing noise.
 
-**Long-term (weeks):** Adopt an **ensemble architecture** where a fast per-request model (15 features, <0.1ms) runs as a first pass on all traffic, and the full session-based model runs only on requests that score above a low suspicion threshold. This reduces dependence on any single feature family and limits the blast radius of feature evasion. Incorporate **adversarial training** — inject TLS-randomized attack samples during training so the model learns to classify without relying on TLS identity. Finally, implement **feature rotation**: periodically vary which features the model weights most heavily, increasing the cost for attackers to reverse-engineer and evade the detection logic.
+**What the model cannot do:** The current recall gap on DDoS (0%) reveals the fundamental limitation of per-source features for distributed attacks. No amount of feature engineering on per-IP aggregates can detect an attack whose signature exists only in the *aggregate across many IPs*. This is a feature-level architectural constraint, not a model quality issue.
+
+**Mitigation strategy across timescales:**
+
+**Immediate (hours):** Lower the blocking threshold to recover partial recall — the threshold economics from Section 3.3 confirm this is net-positive. Activate the threat intelligence feed as a supplementary signal: it covers ~30% of attacks with high precision and requires no model changes. Enable aggressive rate limiting on sensitive endpoints (`/auth`, `/login`, `/payment`, `/tokenize`) as a WAF-level fallback.
+
+**Short-term (days):** Introduce cross-IP aggregate features at the origin or a centralized aggregation layer — global request rate to specific endpoints, IP diversity per endpoint per time window, geographic distribution of requests. These features can detect distributed attacks but require centralized computation, so they supplement the edge model rather than replace it.
+
+**Long-term (weeks):** Adopt an **ensemble architecture** where the fast per-request edge model (15 features, <0.1ms) runs as a first pass, and a centralized model with cross-IP features runs on flagged traffic. Incorporate **adversarial training** — inject IP-rotated attack samples during training so the model learns to classify without relying on session continuity. Implement **feature rotation**: periodically vary which features the model weights most heavily, increasing the cost for attackers to reverse-engineer and evade the detection logic.
 
 ---
 
@@ -210,7 +223,7 @@ The project includes two GitHub Actions workflows ([`.github/workflows/`](.githu
 **`ci.yml`** runs on every push and pull request:
 1. **Lint** — `ruff check` + `ruff format --check` for consistent code style.
 2. **Test** — full pytest suite (53 tests) covering label joining, features, model, export, monitoring.
-3. **ONNX Validation** — trains a model from scratch, exports to ONNX, and validates numerical equivalence. Also asserts minimum metric thresholds (PR-AUC > 0.85, F1 > 0.80) to catch regressions.
+3. **ONNX Validation** — trains a model from scratch, exports to ONNX, and validates numerical equivalence. Also asserts minimum metric thresholds (PR-AUC > 0.50, F1 > 0.40) to catch regressions.
 4. **Rust Build** — compiles the edge-inference binary to verify Rust code integrity.
 
 **`model-validation.yml`** runs on-demand (`workflow_dispatch`) for full model validation:

@@ -91,7 +91,7 @@ def compute_per_request_features(
 
 
 _WINDOWS = {"1m": 60, "5m": 300, "30m": 1800}
-_GRANULARITIES = {"ip": "source_ip", "tls": "tls_fingerprint"}
+_GRANULARITIES = {"ip": "source_ip"}
 
 
 def _causal_nunique(values) -> np.ndarray:
@@ -122,10 +122,10 @@ def _causal_entropy(values) -> np.ndarray:
 
 
 def compute_session_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add 78 session-level features using causal windowing (past-only).
+    """Add session-level features using causal windowing (past-only).
 
     For each request at time t, features aggregate only prior requests from
-    the same source within the same fixed time window. The current request
+    the same source IP within the same fixed time window. The current request
     is never included in its own session aggregates, preventing data leakage
     in offline training while matching the real-time edge computation model.
     """

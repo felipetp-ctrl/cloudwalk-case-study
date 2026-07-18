@@ -99,7 +99,7 @@ jupyter notebook
 | Order | Notebook | What it does | What it produces |
 |---|---|---|---|
 | 1 | `notebooks/eda.ipynb` | Joins incident labels to requests (IP, CIDR, TLS + temporal bounds). Exploratory analysis of attack patterns. | Labeled dataset with 592 malicious / 49,408 benign requests |
-| 2 | `notebooks/feature_engineering.ipynb` | Computes 15 per-request + 78 session features with causal windowing. Analyzes feature distributions. | Feature matrix ready for modeling |
+| 2 | `notebooks/feature_engineering.ipynb` | Computes 15 per-request + 21 IP session features with causal windowing. Analyzes feature distributions. | Feature matrix ready for modeling |
 | 3 | `notebooks/baseline_model.ipynb` | Trains 4 models (LR, RF, XGB, LGBM) with Optuna tuning. Evaluates on temporal split. Pruning and threshold analysis. | `plots/pr_curves.png`, `plots/feature_importance.png`, `plots/cost_curve.png`, trained LGBM model |
 | 4 | `notebooks/edge_deployment.ipynb` | Exports LGBM to ONNX. Benchmarks Python inference (LightGBM native vs ONNX Runtime). Prepares model for Rust/WASM benchmark. | `edge-inference/model/model_full.onnx`, `edge-inference/model/sample_input.json` |
 
@@ -161,7 +161,7 @@ df = build_training_dataset(
     headers_path="data/request_headers.csv",
     labels_path="data/incident_labels.csv",
 )
-# df contains 57 features + labels + sample_weight, ready for modeling
+# df contains 36 features + labels + sample_weight, ready for modeling
 ```
 
 ## AI-Assisted Development: Ethical and Socratic Approach

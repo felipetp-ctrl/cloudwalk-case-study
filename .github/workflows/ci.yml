@@ -56,8 +56,8 @@ jobs:
           model = train_model('lgbm', {'n_estimators': 100, 'verbose': -1}, X_train, y_train, train['sample_weight'])
           metrics = evaluate_model(model, X_test, y_test)
 
-          assert metrics['pr_auc'] > 0.85, f'PR-AUC {metrics[\"pr_auc\"]:.4f} below threshold 0.85'
-          assert metrics['f1'] > 0.80, f'F1 {metrics[\"f1\"]:.4f} below threshold 0.80'
+          assert metrics['pr_auc'] > 0.50, f'PR-AUC {metrics[\"pr_auc\"]:.4f} below threshold 0.50'
+          assert metrics['f1'] > 0.40, f'F1 {metrics[\"f1\"]:.4f} below threshold 0.40'
           print(f'Model metrics — PR-AUC: {metrics[\"pr_auc\"]:.4f}, F1: {metrics[\"f1\"]:.4f}, Precision: {metrics[\"precision\"]:.4f}, Recall: {metrics[\"recall\"]:.4f}')
 
           export_to_onnx(model, features, 'model_ci.onnx')

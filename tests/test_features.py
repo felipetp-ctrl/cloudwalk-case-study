@@ -140,7 +140,7 @@ def _make_session_data():
 def test_session_features_columns_exist():
     df = _make_session_data()
     result = compute_session_features(df)
-    for prefix in ["ip_1m", "ip_5m", "ip_30m", "tls_1m", "tls_5m", "tls_30m"]:
+    for prefix in ["ip_1m", "ip_5m", "ip_30m"]:
         assert f"{prefix}_request_count" in result.columns
         assert f"{prefix}_error_rate" in result.columns
         assert f"{prefix}_unique_paths" in result.columns
@@ -190,6 +190,6 @@ def test_session_feature_count():
     session_cols = [
         c
         for c in result.columns
-        if c.startswith(("ip_", "tls_")) and c != "tls_fingerprint"
+        if c.startswith("ip_")
     ]
-    assert len(session_cols) == 78
+    assert len(session_cols) == 39

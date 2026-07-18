@@ -26,11 +26,9 @@ def test_build_training_dataset_runs_on_real_data():
     session_cols = [
         c
         for c in result.columns
-        if c.startswith(("ip_", "tls_"))
-        and c != "tls_fingerprint"
-        and c != "tls_fingerprint_freq"
+        if c.startswith("ip_")
     ]
-    assert len(session_cols) == 78
+    assert len(session_cols) == 39
     assert "method_freq" in result.columns
     assert "is_malicious" in result.columns
     assert "sample_weight" in result.columns
