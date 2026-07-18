@@ -32,7 +32,7 @@ The feature pipeline ([`src/features.py`](src/features.py)) extracts two categor
 
 **Causal windowing:** Each request's session features aggregate only *prior* requests within the same time window — the current request is never included in its own aggregates. This matches the real-time edge computation model and prevents data leakage. Implemented via `cumcount()`, `expanding().mean().shift(1)`, and custom causal functions for nunique/entropy.
 
-**Excluded features:** 36 server-response session features (aggregates of `status_code`, `response_time_ms`, `body_size_bytes`) were excluded because they encode past WAF decisions, creating a circular dependency with the labels. 4 frequency-encoded categoricals were excluded because they leak test distribution into training. 3 server-response per-request features (`status_code_group`, `response_time_ms`, `body_size_bytes`) were excluded because they are unavailable at inference time (the model classifies the request *before* the server responds).
+**Excluded features:** 36 server-response session features (aggregates of `status_code`, `response_time_ms`, `body_size_bytes`) were excluded because they encode past WAF decisions, creating a circular dependency with the labels. 3 server-response per-request features (`status_code_group`, `response_time_ms`, `body_size_bytes`) were excluded because they are unavailable at inference time (the model classifies the request *before* the server responds).
 
 For justification of each feature choice, see [`docs/2.2-feature-engineering-decisions.md`](docs/2.2-feature-engineering-decisions.md).
 

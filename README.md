@@ -39,7 +39,7 @@ See **[WRITEUP.md](WRITEUP.md)** for the full technical writeup covering reasoni
 │   └── README.md               # Build and run instructions
 ├── tests/                      # Unit tests (63 tests)
 │   ├── test_label_joining.py   # IP exact, CIDR, TLS fingerprint, empty labels
-│   ├── test_features.py        # Entropy, frequency encoding, causal windowing
+│   ├── test_features.py        # Entropy, feature computation, causal windowing
 │   ├── test_model.py           # Splits, CV, training, evaluation, pruning, threshold
 │   ├── test_source_model.py    # Source-level features, training, propagation, ensemble
 │   ├── test_export.py          # ONNX export creation and numerical validation
