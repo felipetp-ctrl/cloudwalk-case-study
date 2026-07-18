@@ -35,8 +35,6 @@ META_COLUMNS = [
     "status_code_group",
 ]
 
-EXCLUDE_SUFFIXES = ("_freq",)
-
 RESPONSE_SESSION_SUFFIXES = (
     "_error_rate",
     "_unique_status_codes",
@@ -52,7 +50,6 @@ def get_feature_columns(df: pd.DataFrame) -> list[str]:
         c
         for c in df.columns
         if c not in META_COLUMNS
-        and not c.endswith(EXCLUDE_SUFFIXES)
         and not any(c.endswith(s) for s in RESPONSE_SESSION_SUFFIXES)
     ]
 

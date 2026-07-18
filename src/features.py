@@ -14,11 +14,6 @@ def shannon_entropy(s: str) -> float:
     return -sum((c / length) * math.log2(c / length) for c in counts.values())
 
 
-def compute_frequency_encoding(series: pd.Series) -> pd.Series:
-    freq = series.value_counts(normalize=True)
-    return series.map(freq).astype(float)
-
-
 _SENSITIVE_PATTERN = re.compile(r"/(?:auth|login|payment|tokenize)", re.IGNORECASE)
 _BROWSER_PATTERN = re.compile(r"Mozilla|Chrome|Safari|Firefox|Edg/", re.IGNORECASE)
 _BOT_PATTERN = re.compile(
@@ -35,28 +30,23 @@ def compute_per_request_features(
     df["path_depth"] = df["path"].str.strip("/").str.split("/").str.len()
     df["path_length"] = df["path"].str.len()
     df["path_entropy"] = df["path"].apply(shannon_entropy)
-    df["path_has_params"] = df["path"].str.contains(r"[?=]", regex=True)
+    df["path_has_params"] = df["path"].str.contains(r"[?=]", regex=True).astype(int)
 
     df["status_code_group"] = df["status_code"] // 100
 
     df["ua_length"] = df["user_agent"].fillna("").str.len()
     df["ua_entropy"] = df["user_agent"].fillna("").apply(shannon_entropy)
     df["ua_is_browser"] = (
-        df["user_agent"].fillna("").str.contains(_BROWSER_PATTERN).astype(bool)
+        df["user_agent"].fillna("").str.contains(_BROWSER_PATTERN).astype(int)
     )
     df["ua_is_bot_library"] = (
-        df["user_agent"].fillna("").str.contains(_BOT_PATTERN).astype(bool)
+        df["user_agent"].fillna("").str.contains(_BOT_PATTERN).astype(int)
     )
-
-    df["method_freq"] = compute_frequency_encoding(df["method"])
-    df["country_freq"] = compute_frequency_encoding(df["country"])
-    df["asn_freq"] = compute_frequency_encoding(df["asn"])
-    df["tls_fingerprint_freq"] = compute_frequency_encoding(df["tls_fingerprint"])
 
     df["hour_of_day"] = pd.to_datetime(df["timestamp"], utc=True).dt.hour
 
     df["is_sensitive_endpoint"] = (
-        df["path"].str.contains(_SENSITIVE_PATTERN).astype(bool)
+        df["path"].str.contains(_SENSITIVE_PATTERN).astype(int)
     )
 
     header_agg = (
@@ -85,7 +75,7 @@ def compute_per_request_features(
         "has_cookie",
         "has_authorization",
     ]:
-        df[col] = df[col].fillna(False).astype(bool)
+        df[col] = df[col].fillna(False).astype(int)
 
     return df
 

@@ -1,7 +1,6 @@
 import pandas as pd
 from src.features import (
     shannon_entropy,
-    compute_frequency_encoding,
     compute_per_request_features,
     compute_session_features,
 )
@@ -17,14 +16,6 @@ def test_shannon_entropy_single_char():
 
 def test_shannon_entropy_empty():
     assert shannon_entropy("") == 0.0
-
-
-def test_frequency_encoding():
-    s = pd.Series(["a", "a", "b", "a", "c", "b"])
-    result = compute_frequency_encoding(s)
-    assert abs(result.iloc[0] - 3 / 6) < 0.001
-    assert abs(result.iloc[2] - 2 / 6) < 0.001
-    assert abs(result.iloc[4] - 1 / 6) < 0.001
 
 
 def test_per_request_features_columns():
@@ -53,7 +44,6 @@ def test_per_request_features_columns():
     )
     result = compute_per_request_features(requests, headers)
     expected_cols = [
-        "method_freq",
         "path_depth",
         "path_length",
         "path_entropy",
@@ -65,9 +55,6 @@ def test_per_request_features_columns():
         "ua_entropy",
         "ua_is_browser",
         "ua_is_bot_library",
-        "country_freq",
-        "asn_freq",
-        "tls_fingerprint_freq",
         "hour_of_day",
         "is_sensitive_endpoint",
         "header_count",

@@ -53,7 +53,7 @@ def compute_source_features(
         from src.features import _SENSITIVE_PATTERN
 
         df["is_sensitive_endpoint"] = (
-            df["path"].str.contains(_SENSITIVE_PATTERN).astype(bool)
+            df["path"].str.contains(_SENSITIVE_PATTERN).astype(int)
         )
 
     agg = (
