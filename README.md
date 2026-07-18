@@ -1,7 +1,6 @@
 # ML-Based Anomaly Detection for Edge HTTP Traffic
 
 [![CI](https://github.com/felipetp-ctrl/cloudwalk-case-study/actions/workflows/ci.yml/badge.svg)](https://github.com/felipetp-ctrl/cloudwalk-case-study/actions/workflows/ci.yml)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/felipetp-ctrl/cloudwalk-case-study/blob/main/notebooks/colab_quickstart.ipynb)
 
 An ML pipeline that classifies incoming HTTP request sequences as malicious or benign in real time at the edge, enabling automated blocking before requests reach origin servers. Built for CloudWalk's edge infrastructure constraints: <5ms inference, WASM runtime, no GPU.
 
@@ -30,8 +29,7 @@ See **[WRITEUP.md](WRITEUP.md)** for the full technical writeup covering reasoni
 │   ├── eda.ipynb               # 2.1 — Exploratory analysis & label joining
 │   ├── feature_engineering.ipynb # 2.2 — Feature engineering pipeline
 │   ├── baseline_model.ipynb    # 2.3 — Model training, evaluation, threshold analysis
-│   ├── edge_deployment.ipynb   # 2.4 — ONNX export, benchmarks, architecture
-│   └── colab_quickstart.ipynb  # Run full pipeline in Google Colab (no local setup)
+│   └── edge_deployment.ipynb   # 2.4 — ONNX export, benchmarks, architecture
 ├── edge-inference/             # Rust/WASM inference benchmark
 │   ├── src/main.rs             # tract-onnx benchmark (native + WASM)
 │   ├── Cargo.toml              # Rust dependencies
@@ -59,14 +57,6 @@ See **[WRITEUP.md](WRITEUP.md)** for the full technical writeup covering reasoni
     ├── 2.4-edge-deployment-decisions.md
     └── edge_deployment.md
 ```
-
-## Quick Start (Google Colab)
-
-No local setup needed — run the full pipeline in the browser:
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/felipetp-ctrl/cloudwalk-case-study/blob/main/notebooks/colab_quickstart.ipynb)
-
-The Colab notebook clones the repo, installs dependencies, and runs everything end-to-end: data → features → model → evaluation → ONNX export → monitoring.
 
 ## Prerequisites
 
